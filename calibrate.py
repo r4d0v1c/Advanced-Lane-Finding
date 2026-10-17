@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 
 from lane_finding.calibration import CameraCalibration, calibrate, collect_observations
+from lane_finding.visualization import side_by_side
 
 logger = logging.getLogger(__name__)
 
@@ -65,15 +66,9 @@ def make_preview(calibration: CameraCalibration, image_path: Path) -> np.ndarray
         BGR image with the original on the left and the undistorted one on the right.
     """
     original = cv2.imread(str(image_path))
-    panels = []
-    for title, panel in (
-        ("Original", original),
-        ("Undistorted", calibration.undistort(original)),
-    ):
-        panel = cv2.resize(panel, None, fx=PREVIEW_SCALE, fy=PREVIEW_SCALE)
-        cv2.putText(panel, title, (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 255), 3)
-        panels.append(panel)
-    return np.hstack(panels)
+    return side_by_side(
+        [original, calibration.undistort(original)], ["Original", "Undistorted"], PREVIEW_SCALE
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
