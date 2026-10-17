@@ -1,22 +1,29 @@
 """Calibrate the camera from chessboard images and save the result.
 
 Usage:
-    python3 calibrate.py [--images-dir DIR] [--output FILE] [--preview FILE]
+    python3 scripts/calibrate.py [--images-dir DIR] [--output FILE] [--preview FILE]
 """
 
 import argparse
 import logging
+import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from lane_finding.calibration import CameraCalibration, calibrate, collect_observations
-from lane_finding.visualization import side_by_side
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))  # the scripts are in a subfolder: make lane_finding importable
+
+from lane_finding.calibration import (  # noqa: E402
+    CameraCalibration,
+    calibrate,
+    collect_observations,
+)
+from lane_finding.visualization import side_by_side  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_IMAGES_DIR = REPO_ROOT / "resources" / "camera_cal_export"
 DEFAULT_OUTPUT = REPO_ROOT / "output" / "calibration.npz"
 DEFAULT_PREVIEW = REPO_ROOT / "output" / "undistort_preview.png"

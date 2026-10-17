@@ -1,7 +1,7 @@
 """Create the binary lane-pixel image of road images and save it next to the original.
 
 Usage:
-    python3 threshold.py [IMAGE ...] [--output-dir DIR]
+    python3 scripts/threshold.py [IMAGE ...] [--output-dir DIR]
 
 Without arguments every image of resources/test_images_export is processed. The
 images are thresholded as they are; undistortion is part of the full pipeline.
@@ -9,16 +9,19 @@ images are thresholded as they are; undistortion is part of the full pipeline.
 
 import argparse
 import logging
+import sys
 from pathlib import Path
 
 import cv2
 
-from lane_finding.thresholding import threshold_lane_pixels
-from lane_finding.visualization import side_by_side
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))  # the scripts are in a subfolder: make lane_finding importable
+
+from lane_finding.thresholding import threshold_lane_pixels  # noqa: E402
+from lane_finding.visualization import side_by_side  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_IMAGES_DIR = REPO_ROOT / "resources" / "test_images_export"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "output" / "threshold"
 
