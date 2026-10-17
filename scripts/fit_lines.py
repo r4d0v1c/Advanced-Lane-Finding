@@ -23,10 +23,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))  # the scripts are in a subfolder: make lane_finding importable
 
 from lane_finding.calibration import CameraCalibration  # noqa: E402
-from lane_finding.cameras import camera_for_size  # noqa: E402
-from lane_finding.lane_fit import LaneFit, fit_lane  # noqa: E402
-from lane_finding.perspective import PerspectiveTransform  # noqa: E402
-from lane_finding.thresholding import threshold_lane_pixels  # noqa: E402
+from lane_finding.lane_fit import LaneFit  # noqa: E402
+from lane_finding.pipeline import LanePipeline  # noqa: E402
 from lane_finding.visualization import draw_lane_fit, side_by_side  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -90,7 +88,7 @@ def main(argv: list[str] | None = None) -> None:
 
     if not CALIBRATION_PATH.exists():
         raise SystemExit(f"{CALIBRATION_PATH} not found. Run python3 scripts/calibrate.py first.")
-    calibration = CameraCalibration.load(CALIBRATION_PATH)
+    pipeline = LanePipeline(CameraCalibration.load(CALIBRATION_PATH))
 
     image_paths = args.images or sorted(DEFAULT_IMAGES_DIR.glob("*.jpg"))
     if not image_paths:
@@ -103,29 +101,22 @@ def main(argv: list[str] | None = None) -> None:
         if image is None:
             logger.warning("Skipping %s: image could not be read", path)
             continue
-        height, width = image.shape[:2]
         try:
-            camera = camera_for_size(width, height)
+            result = pipeline.process(image)
         except ValueError as error:
             logger.warning("Skipping %s: %s", path, error)
             continue
 
-        if (width, height) == calibration.image_size:
-            image = calibration.undistort(image)
-        transform = PerspectiveTransform.for_camera(camera)
-        binary = transform.warp(threshold_lane_pixels(image), cv2.INTER_NEAREST)
-        fit = fit_lane(binary)
-
-        title = f"Lane fit: {fit.mode.value}"
-        if not fit.is_plausible((width, height)):
+        title = f"Lane fit: {result.fit.mode.value}"
+        if not result.plausible:
             title += " (implausible)"
         comparison = side_by_side(
-            [transform.warp(image), draw_lane_fit(binary, fit)],
+            [result.transform.warp(result.image), draw_lane_fit(result.binary, result.fit)],
             ["Bird's-eye view", title],
             PREVIEW_SCALE,
         )
         cv2.imwrite(str(args.output_dir / f"{path.stem}.png"), comparison)
-        logger.info("%-22s %s", path.name, describe(fit))
+        logger.info("%-22s %s", path.name, describe(result.fit))
         saved += 1
     logger.info("Saved %d result images to %s", saved, args.output_dir)
 

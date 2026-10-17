@@ -22,9 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))  # the scripts are in a subfolder: make lane_finding importable
 
 from lane_finding.calibration import CameraCalibration  # noqa: E402
-from lane_finding.cameras import camera_for_size  # noqa: E402
-from lane_finding.perspective import PerspectiveTransform  # noqa: E402
-from lane_finding.thresholding import threshold_lane_pixels  # noqa: E402
+from lane_finding.pipeline import LanePipeline  # noqa: E402
 from lane_finding.visualization import side_by_side  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -73,7 +71,7 @@ def main(argv: list[str] | None = None) -> None:
 
     if not CALIBRATION_PATH.exists():
         raise SystemExit(f"{CALIBRATION_PATH} not found. Run python3 scripts/calibrate.py first.")
-    calibration = CameraCalibration.load(CALIBRATION_PATH)
+    pipeline = LanePipeline(CameraCalibration.load(CALIBRATION_PATH))
 
     image_paths = args.images or sorted(DEFAULT_IMAGES_DIR.glob("*.jpg"))
     if not image_paths:
@@ -86,25 +84,17 @@ def main(argv: list[str] | None = None) -> None:
         if image is None:
             logger.warning("Skipping %s: image could not be read", path)
             continue
-        height, width = image.shape[:2]
         try:
-            camera = camera_for_size(width, height)
+            prepared = pipeline.prepare(image)
         except ValueError as error:
             logger.warning("Skipping %s: %s", path, error)
             continue
 
-        if (width, height) == calibration.image_size:
-            image = calibration.undistort(image)
-        transform = PerspectiveTransform.for_camera(camera)
-        marked = image.copy()
-        trapezoid = np.round(transform.source_points).astype(np.int32)
+        marked = prepared.image.copy()
+        trapezoid = np.round(prepared.transform.source_points).astype(np.int32)
         cv2.polylines(marked, [trapezoid], True, TRAPEZOID_COLOR, 3)
         comparison = side_by_side(
-            [
-                marked,
-                transform.warp(image),
-                transform.warp(threshold_lane_pixels(image), cv2.INTER_NEAREST),
-            ],
+            [marked, prepared.transform.warp(prepared.image), prepared.binary],
             ["Source points", "Bird's-eye view", "Binary"],
             PREVIEW_SCALE,
         )

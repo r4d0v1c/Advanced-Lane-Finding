@@ -21,11 +21,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))  # the scripts are in a subfolder: make lane_finding importable
 
 from lane_finding.calibration import CameraCalibration  # noqa: E402
-from lane_finding.cameras import camera_for_size  # noqa: E402
-from lane_finding.lane_fit import fit_lane  # noqa: E402
-from lane_finding.measurements import measure_lane, meters_per_pixel  # noqa: E402
-from lane_finding.perspective import PerspectiveTransform  # noqa: E402
-from lane_finding.thresholding import threshold_lane_pixels  # noqa: E402
+from lane_finding.overlay import NO_LANE_TEXT  # noqa: E402
+from lane_finding.pipeline import LanePipeline  # noqa: E402
 from lane_finding.visualization import (  # noqa: E402
     draw_lane_fit,
     draw_text_lines,
@@ -39,7 +36,6 @@ DEFAULT_OUTPUT_DIR = REPO_ROOT / "output" / "measure"
 CALIBRATION_PATH = REPO_ROOT / "output" / "calibration.npz"
 
 PREVIEW_SCALE = 0.5
-NO_LANE_TEXT = ["No plausible lane"]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -78,7 +74,7 @@ def main(argv: list[str] | None = None) -> None:
 
     if not CALIBRATION_PATH.exists():
         raise SystemExit(f"{CALIBRATION_PATH} not found. Run python3 scripts/calibrate.py first.")
-    calibration = CameraCalibration.load(CALIBRATION_PATH)
+    pipeline = LanePipeline(CameraCalibration.load(CALIBRATION_PATH))
 
     image_paths = args.images or sorted(DEFAULT_IMAGES_DIR.glob("*.jpg"))
     if not image_paths:
@@ -91,31 +87,25 @@ def main(argv: list[str] | None = None) -> None:
         if image is None:
             logger.warning("Skipping %s: image could not be read", path)
             continue
-        height, width = image.shape[:2]
         try:
-            camera = camera_for_size(width, height)
+            result = pipeline.process(image)
         except ValueError as error:
             logger.warning("Skipping %s: %s", path, error)
             continue
 
-        if (width, height) == calibration.image_size:
-            image = calibration.undistort(image)
-        transform = PerspectiveTransform.for_camera(camera)
-        binary = transform.warp(threshold_lane_pixels(image), cv2.INTER_NEAREST)
-        fit = fit_lane(binary)
-
-        measured = None
-        if fit.is_plausible((width, height)):
-            measured = measure_lane(fit, (width, height), meters_per_pixel(camera))
-        lines = measured.text_lines() if measured else NO_LANE_TEXT
+        height, width = result.image.shape[:2]
+        measured = result.measurements
+        lines = measured.text_lines() if measured else [NO_LANE_TEXT]
         panel = draw_text_lines(
-            draw_lane_fit(binary, fit),
+            draw_lane_fit(result.binary, result.fit),
             lines,
             (int(0.27 * width), int(0.3 * height)),
             scale=1.3 * width / 1280,
         )
         comparison = side_by_side(
-            [transform.warp(image), panel], ["Bird's-eye view", "Measurements"], PREVIEW_SCALE
+            [result.transform.warp(result.image), panel],
+            ["Bird's-eye view", "Measurements"],
+            PREVIEW_SCALE,
         )
         cv2.imwrite(str(args.output_dir / f"{path.stem}.png"), comparison)
         logger.info("%-22s %s", path.name, " | ".join(lines))
