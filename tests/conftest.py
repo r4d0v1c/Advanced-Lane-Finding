@@ -13,6 +13,9 @@ from lane_finding.calibration import (
     calibrate,
     collect_observations,
 )
+from lane_finding.cameras import camera_for_size
+from lane_finding.perspective import PerspectiveTransform
+from lane_finding.thresholding import threshold_lane_pixels
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CALIBRATION_DIR = REPO_ROOT / "resources" / "camera_cal_export"
@@ -69,3 +72,35 @@ def read_video_frame() -> Callable[[str, float], np.ndarray]:
         return frame
 
     return read
+
+
+@pytest.fixture(scope="session")
+def birds_eye_binary(calibration: CameraCalibration) -> Callable[..., np.ndarray]:
+    """Provide a function that turns a road image into the bird's-eye binary image.
+
+    Args:
+        calibration: Calibration of the main camera.
+
+    Returns:
+        Function taking a BGR road image of a known camera and optionally the row of the
+        horizon, and returning the bird's-eye binary image the lane fit works on.
+    """
+
+    def convert(image: np.ndarray, horizon_y: float | None = None) -> np.ndarray:
+        """Undistort (main camera), threshold and warp a road image.
+
+        Args:
+            image: BGR road image.
+            horizon_y: Row of the horizon to use instead of the default one of the camera.
+
+        Returns:
+            Bird's-eye binary image.
+        """
+        height, width = image.shape[:2]
+        camera = camera_for_size(width, height)
+        if (width, height) == calibration.image_size:
+            image = calibration.undistort(image)
+        transform = PerspectiveTransform.for_camera(camera, horizon_y)
+        return transform.warp(threshold_lane_pixels(image), cv2.INTER_NEAREST)
+
+    return convert
