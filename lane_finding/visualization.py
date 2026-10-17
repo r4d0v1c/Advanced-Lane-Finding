@@ -13,6 +13,7 @@ RIGHT_PIXEL_COLOR = (255, 0, 0)  # BGR blue
 CURVE_COLOR = (0, 255, 0)  # BGR green
 RESCUED_CURVE_COLOR = (0, 255, 255)  # BGR yellow: a curve derived from the other line
 CURVE_THICKNESS = 4
+TEXT_COLOR = (0, 255, 255)  # BGR yellow
 
 
 def side_by_side(
@@ -77,4 +78,32 @@ def draw_lane_fit(image: np.ndarray, fit: LaneFit) -> np.ndarray:
         points = np.column_stack([columns, rows]).round().astype(np.int32)
         color = CURVE_COLOR if pixels[0].size else RESCUED_CURVE_COLOR
         cv2.polylines(canvas, [points.reshape(-1, 1, 2)], False, color, CURVE_THICKNESS)
+    return canvas
+
+
+def draw_text_lines(
+    image: np.ndarray,
+    lines: Sequence[str],
+    origin: tuple[int, int],
+    *,
+    scale: float = 1.0,
+    thickness: int = 2,
+) -> np.ndarray:
+    """Write lines of text below each other on a copy of an image.
+
+    Args:
+        image: Image to write on, grayscale or BGR.
+        lines: The lines of text.
+        origin: ``(x, y)`` of the bottom-left corner of the first line.
+        scale: Font scale; the line spacing follows it.
+        thickness: Thickness of the strokes.
+
+    Returns:
+        BGR copy of the image with the text on it.
+    """
+    canvas = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR) if image.ndim == 2 else image.copy()
+    x, y = origin
+    for index, line in enumerate(lines):
+        position = (x, y + round(index * 40 * scale))
+        cv2.putText(canvas, line, position, cv2.FONT_HERSHEY_SIMPLEX, scale, TEXT_COLOR, thickness)
     return canvas

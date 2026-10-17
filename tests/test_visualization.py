@@ -9,8 +9,10 @@ from lane_finding.visualization import (
     LEFT_PIXEL_COLOR,
     RESCUED_CURVE_COLOR,
     RIGHT_PIXEL_COLOR,
+    TEXT_COLOR,
     TITLE_COLOR,
     draw_lane_fit,
+    draw_text_lines,
     side_by_side,
 )
 
@@ -124,3 +126,25 @@ def test_draw_lane_fit_survives_absurd_curves():
     """Curves far outside the image are clipped instead of failing."""
     image = np.zeros((100, 200, 3), np.uint8)
     draw_lane_fit(image, make_fit(left=np.array([1e6, 1e9, -1e12])))
+
+
+def test_draw_text_lines_writes_the_text_and_keeps_the_input():
+    """The text appears on a copy; grayscale input gives a BGR image."""
+    image = np.zeros((120, 400), np.uint8)
+
+    result = draw_text_lines(image, ["First", "Second"], (10, 40))
+
+    assert not image.any()
+    assert result.shape == (120, 400, 3)
+    assert (result == TEXT_COLOR).all(axis=-1).any()
+
+
+def test_draw_text_lines_puts_the_lines_below_each_other():
+    """The second line starts lower than the first one."""
+    image = np.zeros((200, 400, 3), np.uint8)
+
+    result = draw_text_lines(image, ["Line", "Line"], (10, 40))
+
+    rows = np.flatnonzero((result == TEXT_COLOR).all(axis=-1).any(axis=1))
+    assert rows.min() < 40 and rows.max() > 60  # the first line ends above row 40
+    assert np.any(np.diff(rows) > 1)  # a gap between the two lines
