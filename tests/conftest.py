@@ -13,9 +13,7 @@ from lane_finding.calibration import (
     calibrate,
     collect_observations,
 )
-from lane_finding.cameras import camera_for_size
-from lane_finding.perspective import PerspectiveTransform
-from lane_finding.thresholding import threshold_lane_pixels
+from lane_finding.pipeline import LanePipeline
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CALIBRATION_DIR = REPO_ROOT / "resources" / "camera_cal_export"
@@ -96,11 +94,6 @@ def birds_eye_binary(calibration: CameraCalibration) -> Callable[..., np.ndarray
         Returns:
             Bird's-eye binary image.
         """
-        height, width = image.shape[:2]
-        camera = camera_for_size(width, height)
-        if (width, height) == calibration.image_size:
-            image = calibration.undistort(image)
-        transform = PerspectiveTransform.for_camera(camera, horizon_y)
-        return transform.warp(threshold_lane_pixels(image), cv2.INTER_NEAREST)
+        return LanePipeline(calibration, horizon_y).prepare(image).binary
 
     return convert
