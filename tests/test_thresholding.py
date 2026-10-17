@@ -16,7 +16,6 @@ from lane_finding.thresholding import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 IMAGES_DIR = REPO_ROOT / "resources" / "test_images_export"
-VIDEOS_DIR = REPO_ROOT / "resources" / "test_videos_export"
 
 # BGR colors
 ASPHALT = (60, 60, 60)
@@ -62,24 +61,6 @@ def synthetic_road() -> tuple[np.ndarray, np.ndarray]:
     expected[:, 100:112] = 255
     expected[:, 300:312] = 255
     return image, expected
-
-
-def read_video_frame(name: str, seconds: float) -> np.ndarray:
-    """Read one frame of a test video.
-
-    Args:
-        name: File name inside the test video folder.
-        seconds: Position of the frame in the video.
-
-    Returns:
-        BGR frame.
-    """
-    capture = cv2.VideoCapture(str(VIDEOS_DIR / name))
-    capture.set(cv2.CAP_PROP_POS_MSEC, seconds * 1000)
-    found, frame = capture.read()
-    capture.release()
-    assert found, f"could not read {name} at {seconds} s"
-    return frame
 
 
 @pytest.mark.parametrize(
@@ -218,7 +199,7 @@ def test_dry_grass_next_to_the_road_is_removed():
 
 
 @pytest.mark.parametrize("seconds", [32.0, 44.0])
-def test_sunlit_asphalt_is_not_selected_as_lane(seconds):
+def test_sunlit_asphalt_is_not_selected_as_lane(seconds, read_video_frame):
     """Overexposed asphalt (challenge video) is largely removed by the width filter."""
     frame = read_video_frame("challenge03.mp4", seconds)
     lower_half = slice(frame.shape[0] // 2, None)

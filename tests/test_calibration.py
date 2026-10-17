@@ -83,29 +83,6 @@ def synthetic_observations(
     return ChessboardObservations(image_points, image_size)
 
 
-@pytest.fixture(scope="module")
-def observations() -> ChessboardObservations:
-    """Detect the chessboard once in all real calibration images.
-
-    Returns:
-        Observations of the repository's calibration images.
-    """
-    return collect_observations(sorted(CALIBRATION_DIR.glob("*.jpg")))
-
-
-@pytest.fixture(scope="module")
-def calibration(observations: ChessboardObservations) -> CameraCalibration:
-    """Calibrate once on the real calibration images.
-
-    Args:
-        observations: Detected corners of the calibration images.
-
-    Returns:
-        The calibrated camera.
-    """
-    return calibrate(observations)
-
-
 def test_object_points_layout():
     """Object points form a unit grid in the z=0 plane, ordered row by row."""
     points = build_object_points((9, 6))
