@@ -11,9 +11,11 @@ from lane_finding.lane_fit import (
     FitMode,
     LaneFit,
     find_base_positions,
+    fit_from_pixels,
     fit_lane,
     fit_polynomial,
     fit_shared_curvature,
+    search_around,
     search_windows,
 )
 
@@ -90,6 +92,50 @@ def test_search_windows_do_not_collect_noise_far_from_the_lines():
     image = draw_lane(size, left, right, blocks=[(100, 560, 400, 80)])
     (left_rows, _), (right_rows, _) = search_windows(image, find_base_positions(image))
     assert left_rows.size + right_rows.size == np.count_nonzero(draw_lane(size, left, right))
+
+
+# ----------------------------------------------------------------------- search_around
+
+
+def test_search_around_collects_the_pixels_near_the_given_curves():
+    """The band around the previous curves holds the lines and not the noise."""
+    size = (1280, 720)
+    left, right = lane(size, slope=-0.1, shift=0.1)
+    image = draw_lane(size, left, right, blocks=[(100, 560, 400, 80)])
+
+    (left_rows, left_columns), (right_rows, right_columns) = search_around(image, (left, right))
+
+    assert left_rows.size + right_rows.size == np.count_nonzero(draw_lane(size, left, right))
+    assert np.all(left_columns < 640) and np.all(right_columns > 640)
+
+
+def test_search_around_follows_the_curves_through_the_gaps_of_a_dashed_line():
+    """The band is centered on the curve, so a gap in the line does not lead it astray."""
+    size = (1280, 720)
+    left, right = lane(size, slope=-0.08, shift=0.2)
+    image = draw_lane(size, left, right, right_dashed=True)
+
+    _, (rows, _) = search_around(image, (left, right))
+
+    assert rows.size == np.count_nonzero(draw_lane(size, None, right, right_dashed=True))
+
+
+def test_search_around_misses_a_line_that_moved_out_of_the_band():
+    """A line further from the previous curve than the margin is not collected."""
+    size = (1280, 720)
+    left, right = lane(size)
+    moved = left + np.array([0.0, 0.0, 0.1 * size[0]])
+
+    (rows, _), _ = search_around(draw_lane(size, moved, None), (left, right))
+
+    assert rows.size == 0
+
+
+def test_search_around_rejects_a_color_image():
+    """Only single-channel images are accepted."""
+    left, right = lane((1280, 720))
+    with pytest.raises(ValueError, match="single-channel"):
+        search_around(np.zeros((720, 1280, 3), np.uint8), (left, right))
 
 
 # --------------------------------------------------------------------- fit_polynomial
@@ -298,6 +344,48 @@ def test_fit_lane_follows_a_line_with_a_gap():
 
     assert fit.mode is FitMode.INDEPENDENT
     assert max_error(fit.left, left, size) < 3
+
+
+@pytest.mark.parametrize("size", SIZES)
+def test_fit_from_pixels_equals_fit_lane_for_the_pixels_of_the_windows(size):
+    """Fitting the collected pixels is the second half of fit_lane."""
+    left, right = lane(size, slope=0.05, shift=0.1)
+    image = draw_lane(size, left, right, right_dashed=True)
+    pixels = search_windows(image, find_base_positions(image))
+
+    fit = fit_from_pixels(*pixels, size)
+
+    expected = fit_lane(image)
+    assert fit.mode is expected.mode
+    assert np.array_equal(fit.left, expected.left)
+    assert np.array_equal(fit.right, expected.right)
+
+
+def test_a_missing_line_is_derived_with_the_given_lane_width():
+    """The width given for the lane (a polynomial) replaces the nominal one."""
+    size = (1280, 720)
+    left, _ = lane(size, slope=0.05, shift=0.1)
+    width = np.array([2e-5, -0.01, 700.0])  # a wider lane that gets slightly wider with the row
+    image = draw_lane(size, left, None)
+
+    fit = fit_lane(image, lane_width=width)
+    from_pixels = fit_from_pixels(*search_windows(image, find_base_positions(image)), size, width)
+
+    assert fit.mode is FitMode.RESCUED
+    assert max_error(fit.right, left + width, size) < 3
+    assert np.array_equal(from_pixels.right, fit.right)
+
+
+def test_a_missing_left_line_is_derived_with_the_given_lane_width():
+    """The given lane width is subtracted from the right line."""
+    size = (1280, 720)
+    _, right = lane(size, slope=0.05, shift=0.1)
+    width = np.array([0.0, 0.0, 520.0])
+
+    fit = fit_lane(draw_lane(size, None, right), lane_width=width)
+
+    assert fit.mode is FitMode.RESCUED
+    assert max_error(fit.left, right - width, size) < 3
 
 
 def test_fit_lane_of_an_empty_image_finds_nothing():

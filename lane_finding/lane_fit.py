@@ -11,6 +11,9 @@ Each lane line is described by a second-degree polynomial ``x = A*y**2 + B*y + C
 4. How the lines are fitted depends on how well each of them is supported by pixels: two
    strong lines are fitted independently, a weak line is fitted together with the other one
    (shared curvature) and a missing line is derived from the other one by the lane width.
+
+In a video the first two steps can be replaced by :func:`search_around`, which takes the
+pixels near the curves of the previous frame (see :mod:`lane_finding.tracking`).
 """
 
 from dataclasses import dataclass, field
@@ -34,6 +37,9 @@ MIN_WINDOW_PIXELS_FRACTION = 0.00005
 HISTOGRAM_SMOOTHING_FRACTION = 0.02
 # The line starts are searched this far (fraction of the width) from the lane columns.
 BASE_SEARCH_HALF_WIDTH = 0.18
+# Half width of the band around the previous curves in which a line is searched in a video
+# (fraction of the width). Lane lines are about 3 % wide and move little between frames.
+SEARCH_MARGIN_FRACTION = 0.06
 
 # How well a line must be supported by pixels. A line is present with at least this many
 # pixels (fraction of the image area) spread over this fraction of the image height.
@@ -63,7 +69,8 @@ MAX_CURVATURE_SHIFT = 1.05
 CHECK_ROW_FRACTIONS = np.linspace(0.05, 0.95, 10)
 VISIBLE_COLUMN_RANGE = (-0.25, 1.25)
 
-_NO_PIXELS: Pixels = (np.empty(0, np.intp), np.empty(0, np.intp))
+# The pixels of a line that was not found or was derived from the other one.
+NO_PIXELS: Pixels = (np.empty(0, np.intp), np.empty(0, np.intp))
 
 
 class FitMode(Enum):
@@ -72,6 +79,8 @@ class FitMode(Enum):
     INDEPENDENT = "independent"
     SHARED_CURVATURE = "shared curvature"
     RESCUED = "rescued"
+    # Not found in this frame: the lane of the previous frames (only in a video).
+    TRACKED = "tracked"
     NONE = "none"
 
 
@@ -279,7 +288,7 @@ def search_windows(
             track.center = min(max(track.center, margin), width - margin)
 
     lines = [
-        (np.concatenate(track.rows), np.concatenate(track.columns)) if track.rows else _NO_PIXELS
+        (np.concatenate(track.rows), np.concatenate(track.columns)) if track.rows else NO_PIXELS
         for track in tracks
     ]
     return lines[0], lines[1]
@@ -450,27 +459,64 @@ def _is_line_strong(pixels: Pixels, size: tuple[int, int]) -> bool:
     return int(np.count_nonzero(np.bincount(bins, minlength=HEIGHT_BINS))) >= STRONG_LINE_MIN_BINS
 
 
-def fit_lane(binary: np.ndarray) -> LaneFit:
-    """Find the two lane lines in a bird's-eye binary image and fit their polynomials.
+def search_around(
+    binary: np.ndarray,
+    curves: tuple[np.ndarray, np.ndarray],
+    margin_fraction: float = SEARCH_MARGIN_FRACTION,
+) -> tuple[Pixels, Pixels]:
+    """Collect the pixels of the two lane lines near the curves of a previous frame.
 
-    Two strong lines are fitted independently. If a line is only weakly supported, both
-    are fitted with a common curvature. If only one line is present, the other one is
-    derived from it by the expected lane width.
+    In a video the lines move only a little from one frame to the next, so it is enough to
+    take the pixels in a band around the previous curves. This is faster than the windows,
+    it needs no histogram and a gap in a dashed line does not matter because the band
+    follows the curve through it.
 
     Args:
         binary: Bird's-eye binary image (lane pixels are non-zero).
+        curves: Coefficients ``(A, B, C)`` of the previous left and right curve.
+        margin_fraction: Half width of the band as a fraction of the image width.
 
     Returns:
-        The fitted lines and how they were obtained. Use :meth:`LaneFit.is_plausible` to
-        check the result; it may not describe a lane when the image shows none.
+        The rows and columns of the pixels collected for the left and the right line.
 
     Raises:
         ValueError: If the input is not a single-channel image.
     """
     _require_image(binary)
-    height, width = binary.shape
-    size = (width, height)
-    left_pixels, right_pixels = search_windows(binary, find_base_positions(binary))
+    margin = margin_fraction * binary.shape[1]
+    rows, columns = np.nonzero(binary)
+    lines = []
+    for coefficients in curves:
+        inside = np.abs(columns - np.polyval(coefficients, rows)) < margin
+        lines.append((rows[inside], columns[inside]))
+    return lines[0], lines[1]
+
+
+def fit_from_pixels(
+    left_pixels: Pixels,
+    right_pixels: Pixels,
+    size: tuple[int, int],
+    lane_width: np.ndarray | None = None,
+) -> LaneFit:
+    """Fit the two lane lines to the pixels collected for them.
+
+    Two strong lines are fitted independently. If a line is only weakly supported, both
+    are fitted with a common curvature. If only one line is present, the other one is
+    derived from it by the lane width.
+
+    Args:
+        left_pixels: Rows and columns collected for the left line.
+        right_pixels: Rows and columns collected for the right line.
+        size: ``(width, height)`` of the image the pixels come from.
+        lane_width: Coefficients of the lane width in pixels, that is of the right curve
+            minus the left curve, used to derive a missing line. By default the lane has
+            the constant width the bird's-eye view maps a lane to.
+
+    Returns:
+        The fitted lines and how they were obtained. Use :meth:`LaneFit.is_plausible` to
+        check the result; it may not describe a lane when the pixels show none.
+    """
+    width = size[0]
     left_present = _is_line_present(left_pixels, size)
     right_present = _is_line_present(right_pixels, size)
 
@@ -491,15 +537,40 @@ def fit_lane(binary: np.ndarray) -> LaneFit:
         if right_present:
             right = fit_polynomial(*right_pixels)
 
-    lane_width = LANE_WIDTH_FRACTION * width
+    if lane_width is None:
+        lane_width = np.array([0.0, 0.0, LANE_WIDTH_FRACTION * width])
     if left is not None and right is None:
-        right = left + np.array([0.0, 0.0, lane_width])
-        right_pixels = _NO_PIXELS
+        right = left + lane_width
+        right_pixels = NO_PIXELS
         mode = FitMode.RESCUED
     elif right is not None and left is None:
-        left = right - np.array([0.0, 0.0, lane_width])
-        left_pixels = _NO_PIXELS
+        left = right - lane_width
+        left_pixels = NO_PIXELS
         mode = FitMode.RESCUED
     elif left is None and right is None:
         mode = FitMode.NONE
     return LaneFit(left, right, left_pixels, right_pixels, mode)
+
+
+def fit_lane(binary: np.ndarray, lane_width: np.ndarray | None = None) -> LaneFit:
+    """Find the two lane lines in a bird's-eye binary image and fit their polynomials.
+
+    The lines are searched from scratch: the histogram gives where they start and the
+    sliding windows follow them. See :func:`fit_from_pixels` for how the lines are fitted.
+
+    Args:
+        binary: Bird's-eye binary image (lane pixels are non-zero).
+        lane_width: Coefficients of the lane width in pixels (right curve minus left curve)
+            used to derive a missing line, by default a lane of the nominal constant width.
+
+    Returns:
+        The fitted lines and how they were obtained. Use :meth:`LaneFit.is_plausible` to
+        check the result; it may not describe a lane when the image shows none.
+
+    Raises:
+        ValueError: If the input is not a single-channel image.
+    """
+    _require_image(binary)
+    height, width = binary.shape
+    left_pixels, right_pixels = search_windows(binary, find_base_positions(binary))
+    return fit_from_pixels(left_pixels, right_pixels, (width, height), lane_width)
