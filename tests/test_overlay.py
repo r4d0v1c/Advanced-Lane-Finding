@@ -19,6 +19,7 @@ from lane_finding.overlay import (
 )
 from lane_finding.perspective import PerspectiveTransform
 from lane_finding.pipeline import LanePipeline
+from lane_finding.tracking import TrackStatus
 from lane_finding.visualization import TEXT_COLOR
 
 IMAGES_DIR = Path(__file__).resolve().parents[1] / "resources" / "test_images_export"
@@ -177,6 +178,21 @@ def test_without_measurements_only_a_note_is_written():
 
     assert (result == TEXT_COLOR).all(axis=-1).any()
     assert np.array_equal(result[int(0.3 * height) :], image[int(0.3 * height) :])
+
+
+def test_a_held_lane_is_drawn_with_a_note():
+    """A lane held from earlier frames looks like a detected one, with one more line of text."""
+    image, transform, fit = make_scene(CAMERAS[0])
+    height = image.shape[0]
+
+    detected = draw_lane_overlay(image, transform, fit, MEASUREMENTS)
+    held = draw_lane_overlay(image, transform, fit, MEASUREMENTS, TrackStatus.HELD)
+
+    below_text = slice(int(0.35 * height), None)
+    assert np.array_equal(held[below_text], detected[below_text])
+    assert np.count_nonzero((held == TEXT_COLOR).all(axis=-1)) > np.count_nonzero(
+        (detected == TEXT_COLOR).all(axis=-1)
+    )
 
 
 def test_the_input_image_is_not_modified():

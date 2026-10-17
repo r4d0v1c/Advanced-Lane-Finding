@@ -10,6 +10,7 @@ import numpy as np
 from lane_finding.lane_fit import LaneFit
 from lane_finding.measurements import LaneMeasurements
 from lane_finding.perspective import PerspectiveTransform
+from lane_finding.tracking import TrackStatus
 from lane_finding.visualization import curve_points, draw_text_lines
 
 AREA_COLOR = (0, 200, 0)  # BGR green
@@ -20,6 +21,7 @@ LINE_OPACITY = 0.9
 # Width of the drawn lane lines in the bird's-eye view as a fraction of the image width.
 LINE_WIDTH_FRACTION = 0.012
 NO_LANE_TEXT = "No plausible lane"
+HELD_TEXT = "Lane lines not visible: last lane held"
 
 # Values of the label image the lane is drawn into (0 is the background).
 AREA_LABEL = 1
@@ -74,11 +76,13 @@ def draw_lane_overlay(
     transform: PerspectiveTransform,
     fit: LaneFit,
     measurements: LaneMeasurements | None,
+    status: TrackStatus = TrackStatus.DETECTED,
 ) -> np.ndarray:
     """Draw the lane and the measurements on a copy of a road image.
 
     The lane area is green and its boundaries are red (left) and blue (right). The text at
     the top gives the radius of curvature, the position of the vehicle and the lane width.
+    A lane that is held from earlier frames of a video is drawn as well, with a note.
     Without measurements (no plausible lane) only a note is written.
 
     Args:
@@ -87,6 +91,7 @@ def draw_lane_overlay(
         fit: The lane lines in the bird's-eye view.
         measurements: Measurements of the lane made from the fit, or ``None`` if there is no
             plausible lane (then no lane is drawn).
+        status: Whether the lane was found in this image or is held from earlier frames.
 
     Returns:
         BGR copy of the image with the lane drawn on it.
@@ -100,6 +105,8 @@ def draw_lane_overlay(
         _blend(canvas, labels == RIGHT_LABEL, RIGHT_LINE_COLOR, LINE_OPACITY)
 
     lines = measurements.text_lines() if measurements is not None else [NO_LANE_TEXT]
+    if status is TrackStatus.HELD:
+        lines.append(HELD_TEXT)
     return draw_text_lines(
         canvas, lines, (30, round(0.09 * height)), scale=1.2 * width / 1280, thickness=2
     )
