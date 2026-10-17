@@ -14,6 +14,11 @@ CURVE_COLOR = (0, 255, 0)  # BGR green
 RESCUED_CURVE_COLOR = (0, 255, 255)  # BGR yellow: a curve derived from the other line
 CURVE_THICKNESS = 4
 TEXT_COLOR = (0, 255, 255)  # BGR yellow
+TEXT_OUTLINE_COLOR = (0, 0, 0)  # BGR black: keeps the text readable on a bright background
+# The outline is the text drawn in black, moved by this many pixels per unit of the font scale
+# in the eight directions around the text.
+TEXT_OUTLINE_WIDTH = 1.5
+_OUTLINE_DIRECTIONS = [(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1) if (dx, dy) != (0, 0)]
 
 
 def side_by_side(
@@ -106,6 +111,8 @@ def draw_text_lines(
 ) -> np.ndarray:
     """Write lines of text below each other on a copy of an image.
 
+    The text is yellow with a black outline, so that it can be read on any background.
+
     Args:
         image: Image to write on, grayscale or BGR.
         lines: The lines of text.
@@ -119,6 +126,19 @@ def draw_text_lines(
     canvas = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR) if image.ndim == 2 else image.copy()
     x, y = origin
     for index, line in enumerate(lines):
-        position = (x, y + round(index * 40 * scale))
+        row = y + round(index * 40 * scale)
+        shift = max(1, round(TEXT_OUTLINE_WIDTH * scale))
+        for dx, dy in _OUTLINE_DIRECTIONS:
+            position = (x + dx * shift, row + dy * shift)
+            cv2.putText(
+                canvas,
+                line,
+                position,
+                cv2.FONT_HERSHEY_SIMPLEX,
+                scale,
+                TEXT_OUTLINE_COLOR,
+                thickness,
+            )
+        position = (x, row)
         cv2.putText(canvas, line, position, cv2.FONT_HERSHEY_SIMPLEX, scale, TEXT_COLOR, thickness)
     return canvas

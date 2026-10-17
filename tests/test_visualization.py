@@ -10,6 +10,7 @@ from lane_finding.visualization import (
     RESCUED_CURVE_COLOR,
     RIGHT_PIXEL_COLOR,
     TEXT_COLOR,
+    TEXT_OUTLINE_COLOR,
     TITLE_COLOR,
     curve_points,
     draw_lane_fit,
@@ -156,6 +157,16 @@ def test_draw_text_lines_writes_the_text_and_keeps_the_input():
     assert not image.any()
     assert result.shape == (120, 400, 3)
     assert (result == TEXT_COLOR).all(axis=-1).any()
+
+
+def test_draw_text_lines_outlines_the_text_so_that_it_can_be_read_on_a_bright_background():
+    """On a white image the text has a dark outline around its yellow strokes."""
+    image = np.full((120, 400, 3), 255, np.uint8)
+
+    result = draw_text_lines(image, ["Text"], (10, 60))
+
+    assert (result == TEXT_COLOR).all(axis=-1).any()
+    assert (result == TEXT_OUTLINE_COLOR).all(axis=-1).any()
 
 
 def test_draw_text_lines_puts_the_lines_below_each_other():
