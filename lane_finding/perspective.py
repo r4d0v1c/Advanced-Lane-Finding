@@ -13,6 +13,8 @@ from lane_finding.cameras import CameraProfile
 # The lane is mapped to the middle half of the bird's-eye image; the margins on both
 # sides keep the lane lines visible when the car is off-center or the road bends.
 LANE_MARGIN_FRACTION = 0.25
+# The lane therefore spans this fraction of the image width.
+LANE_WIDTH_FRACTION = 1 - 2 * LANE_MARGIN_FRACTION
 
 
 def destination_points(size: tuple[int, int]) -> np.ndarray:

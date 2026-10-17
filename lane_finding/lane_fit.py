@@ -19,7 +19,7 @@ from enum import Enum
 import cv2
 import numpy as np
 
-from lane_finding.perspective import LANE_MARGIN_FRACTION
+from lane_finding.perspective import LANE_MARGIN_FRACTION, LANE_WIDTH_FRACTION
 
 # A set of pixels: the rows and the columns of the selected pixels.
 Pixels = tuple[np.ndarray, np.ndarray]
@@ -57,7 +57,6 @@ MIN_ROBUST_WEIGHT = 10.0
 # Plausibility of a lane. The lane width is checked at several rows, the curve may not shift
 # sideways by more than about one image width over the image height (a curve of about 60 m
 # radius), and the curves have to stay near the image.
-LANE_WIDTH_FRACTION = 1 - 2 * LANE_MARGIN_FRACTION
 LANE_WIDTH_RANGE = (0.6, 1.5)
 MAX_LANE_WIDTH_RATIO = 1.5
 MAX_CURVATURE_SHIFT = 1.05

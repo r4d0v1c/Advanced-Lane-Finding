@@ -9,6 +9,11 @@ distance from the horizon in the image:
 
 The lane width per row is about 3 for both cameras, which means that both are mounted
 at the same height. The vanishing point lies in the middle column of the image.
+
+The same model gives the ground distance of an image row, which turns the bird's-eye view
+into a map with a known scale:
+
+    distance in metres = focal_height / (row - horizon_y)
 """
 
 from dataclasses import dataclass
@@ -31,6 +36,12 @@ class CameraProfile:
             lies (about 35 m ahead). Smaller values look further.
         bottom_y: Row of the near edge of the bird's-eye view, just above the car hood
             or the bottom of the image.
+        focal_height: Focal length (in pixels) times the height of the camera above the
+            road (in metres). It was calibrated with the dashed lane line, whose dashes
+            repeat every 14.63 m (12 ft dash and 36 ft gap), and agrees with the focal
+            length of the chessboard calibration within a few percent for the main
+            camera. The distances are accurate to about 5 %, mostly because they depend
+            on the horizon row.
     """
 
     name: str
@@ -39,6 +50,7 @@ class CameraProfile:
     lane_width_per_row: float
     top_offset: float
     bottom_y: float
+    focal_height: float
 
     def source_points(self, horizon_y: float | None = None) -> np.ndarray:
         """Compute the road trapezoid that is mapped to the bird's-eye view.
@@ -86,6 +98,7 @@ MAIN_CAMERA = CameraProfile(
     lane_width_per_row=2.97,
     top_offset=40.0,
     bottom_y=668.0,
+    focal_height=1400.0,
 )
 
 # A different camera (no hood visible) without calibration.
@@ -96,6 +109,7 @@ SECOND_CAMERA = CameraProfile(
     lane_width_per_row=3.01,
     top_offset=30.0,
     bottom_y=535.0,
+    focal_height=1340.0,
 )
 
 CAMERAS = (MAIN_CAMERA, SECOND_CAMERA)
