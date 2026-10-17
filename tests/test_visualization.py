@@ -11,6 +11,7 @@ from lane_finding.visualization import (
     RIGHT_PIXEL_COLOR,
     TEXT_COLOR,
     TITLE_COLOR,
+    curve_points,
     draw_lane_fit,
     draw_text_lines,
     side_by_side,
@@ -51,6 +52,24 @@ def test_side_by_side_rejects_images_of_different_heights():
     """Images of different heights cannot be placed in one row."""
     with pytest.raises(ValueError, match="height"):
         side_by_side([np.zeros((10, 10), np.uint8), np.zeros((20, 10), np.uint8)], ["A", "B"])
+
+
+def test_curve_points_gives_one_point_per_row():
+    """Every row of the image has a point at the column of the curve."""
+    points = curve_points(np.array([0.0, 0.5, 20.0]), (200, 100))
+
+    assert points.shape == (100, 2)
+    assert points.dtype == np.int32
+    assert points[:, 1].tolist() == list(range(100))
+    assert points[0].tolist() == [20, 0]
+    assert points[40].tolist() == [40, 40]
+
+
+def test_curve_points_clips_absurd_curves():
+    """Columns far outside the image are limited to one image width around it."""
+    points = curve_points(np.array([1e6, 1e9, -1e12]), (200, 100))
+    assert points[:, 0].min() >= -200
+    assert points[:, 0].max() <= 400
 
 
 def make_fit(left=None, right=None, left_pixels=None, right_pixels=None) -> LaneFit:

@@ -48,6 +48,23 @@ def side_by_side(
     return np.hstack(labelled)
 
 
+def curve_points(coefficients: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    """Sample a lane curve at every row of a bird's-eye image, for drawing it.
+
+    Args:
+        coefficients: ``(A, B, C)`` of the curve ``x = A*y**2 + B*y + C`` in pixels.
+        size: ``(width, height)`` of the image. Columns far outside the image are clipped,
+            so that a wild curve cannot break the drawing.
+
+    Returns:
+        Integer array of shape ``(height, 2)`` with the ``(column, row)`` of each point.
+    """
+    width, height = size
+    rows = np.arange(height)
+    columns = np.clip(np.polyval(coefficients, rows), -width, 2 * width)
+    return np.column_stack([columns, rows]).round().astype(np.int32)
+
+
 def draw_lane_fit(image: np.ndarray, fit: LaneFit) -> np.ndarray:
     """Draw the pixels and the curves of a lane fit on a copy of an image.
 
@@ -70,12 +87,10 @@ def draw_lane_fit(image: np.ndarray, fit: LaneFit) -> np.ndarray:
     ):
         canvas[rows, columns] = color
 
-    rows = np.arange(height)
     for coefficients, pixels in ((fit.left, fit.left_pixels), (fit.right, fit.right_pixels)):
         if coefficients is None:
             continue
-        columns = np.clip(np.polyval(coefficients, rows), -width, 2 * width)
-        points = np.column_stack([columns, rows]).round().astype(np.int32)
+        points = curve_points(coefficients, (width, height))
         color = CURVE_COLOR if pixels[0].size else RESCUED_CURVE_COLOR
         cv2.polylines(canvas, [points.reshape(-1, 1, 2)], False, color, CURVE_THICKNESS)
     return canvas
