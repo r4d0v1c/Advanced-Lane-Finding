@@ -3,7 +3,16 @@
 import numpy as np
 import pytest
 
-from lane_finding.visualization import TITLE_COLOR, side_by_side
+from lane_finding.lane_fit import FitMode, LaneFit
+from lane_finding.visualization import (
+    CURVE_COLOR,
+    LEFT_PIXEL_COLOR,
+    RESCUED_CURVE_COLOR,
+    RIGHT_PIXEL_COLOR,
+    TITLE_COLOR,
+    draw_lane_fit,
+    side_by_side,
+)
 
 
 def test_side_by_side_combines_color_and_grayscale_panels():
@@ -40,3 +49,78 @@ def test_side_by_side_rejects_images_of_different_heights():
     """Images of different heights cannot be placed in one row."""
     with pytest.raises(ValueError, match="height"):
         side_by_side([np.zeros((10, 10), np.uint8), np.zeros((20, 10), np.uint8)], ["A", "B"])
+
+
+def make_fit(left=None, right=None, left_pixels=None, right_pixels=None) -> LaneFit:
+    """Create a lane fit for the drawing tests.
+
+    Args:
+        left: Coefficients of the left curve or ``None``.
+        right: Coefficients of the right curve or ``None``.
+        left_pixels: ``(rows, columns)`` of the left pixels; none by default.
+        right_pixels: ``(rows, columns)`` of the right pixels; none by default.
+
+    Returns:
+        The lane fit.
+    """
+    empty = (np.empty(0, np.intp), np.empty(0, np.intp))
+    return LaneFit(
+        left,
+        right,
+        left_pixels or empty,
+        right_pixels or empty,
+        FitMode.INDEPENDENT,
+    )
+
+
+def test_draw_lane_fit_colors_the_pixels_of_each_line():
+    """The left pixels are red, the right pixels blue and the others keep their color."""
+    binary = np.zeros((100, 200), np.uint8)
+    binary[:, 100] = 255
+    fit = make_fit(
+        left_pixels=(np.array([10, 11]), np.array([20, 21])),
+        right_pixels=(np.array([50]), np.array([150])),
+    )
+
+    result = draw_lane_fit(binary, fit)
+
+    assert result.shape == (100, 200, 3)
+    assert tuple(result[10, 20]) == LEFT_PIXEL_COLOR
+    assert tuple(result[11, 21]) == LEFT_PIXEL_COLOR
+    assert tuple(result[50, 150]) == RIGHT_PIXEL_COLOR
+    assert tuple(result[70, 100]) == (255, 255, 255)
+
+
+def test_draw_lane_fit_draws_the_curves():
+    """A curve with pixels is green, a curve without pixels (derived) is yellow."""
+    image = np.zeros((100, 200, 3), np.uint8)
+    fit = make_fit(
+        left=np.array([0.0, 0.0, 50.0]),
+        right=np.array([0.0, 0.0, 150.0]),
+        left_pixels=(np.array([10]), np.array([50])),
+    )
+
+    result = draw_lane_fit(image, fit)
+
+    assert tuple(result[60, 50]) == CURVE_COLOR
+    assert tuple(result[60, 150]) == RESCUED_CURVE_COLOR
+
+
+def test_draw_lane_fit_does_not_modify_the_input():
+    """The input image is left untouched."""
+    image = np.zeros((100, 200, 3), np.uint8)
+    fit = make_fit(left=np.array([0.0, 0.0, 50.0]), left_pixels=(np.array([5]), np.array([5])))
+    draw_lane_fit(image, fit)
+    assert not image.any()
+
+
+def test_draw_lane_fit_without_curves_draws_only_pixels():
+    """A fit that found nothing leaves the image as it is."""
+    image = np.zeros((100, 200), np.uint8)
+    assert not draw_lane_fit(image, make_fit()).any()
+
+
+def test_draw_lane_fit_survives_absurd_curves():
+    """Curves far outside the image are clipped instead of failing."""
+    image = np.zeros((100, 200, 3), np.uint8)
+    draw_lane_fit(image, make_fit(left=np.array([1e6, 1e9, -1e12])))
