@@ -1,0 +1,6 @@
+venv/
+__pycache__/
+.pytest_cache/
+
+# Generated results (calibration file, debug images, processed videos)
+output/
