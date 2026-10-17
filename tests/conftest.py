@@ -73,6 +73,39 @@ def read_video_frame() -> Callable[[str, float], np.ndarray]:
 
 
 @pytest.fixture(scope="session")
+def read_video_frames() -> Callable[[str, float, int], list[np.ndarray]]:
+    """Provide a function that reads consecutive frames of a test video.
+
+    Returns:
+        Function taking the video file name, the position of the first frame in seconds and
+        the number of frames, and returning the BGR frames.
+    """
+
+    def read(name: str, seconds: float, count: int) -> list[np.ndarray]:
+        """Read consecutive frames of a test video.
+
+        Args:
+            name: File name inside the test video folder.
+            seconds: Position of the first frame in the video.
+            count: Number of frames.
+
+        Returns:
+            The BGR frames.
+        """
+        capture = cv2.VideoCapture(str(VIDEOS_DIR / name))
+        capture.set(cv2.CAP_PROP_POS_MSEC, seconds * 1000)
+        frames = []
+        for _ in range(count):
+            found, frame = capture.read()
+            assert found, f"could not read {name} at {seconds} s"
+            frames.append(frame)
+        capture.release()
+        return frames
+
+    return read
+
+
+@pytest.fixture(scope="session")
 def birds_eye_binary(calibration: CameraCalibration) -> Callable[..., np.ndarray]:
     """Provide a function that turns a road image into the bird's-eye binary image.
 

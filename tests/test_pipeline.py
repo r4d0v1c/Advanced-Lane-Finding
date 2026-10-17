@@ -11,6 +11,7 @@ from lane_finding.lane_fit import FitMode
 from lane_finding.measurements import LANE_WIDTH_METERS, measure_lane, meters_per_pixel
 from lane_finding.pipeline import LanePipeline
 from lane_finding.thresholding import threshold_lane_pixels
+from lane_finding.tracking import LaneTracker, TrackStatus
 
 IMAGES_DIR = Path(__file__).resolve().parents[1] / "resources" / "test_images_export"
 
@@ -27,6 +28,28 @@ def read_test_image(name: str) -> np.ndarray:
     image = cv2.imread(str(IMAGES_DIR / f"{name}.jpg"))
     assert image is not None, f"could not read {name}"
     return image
+
+
+# ---------------------------------------------------------------------- lane_pixels
+
+
+def test_lane_pixels_undistorts_and_selects_the_lane_pixels_in_the_camera_view(calibration):
+    """The mask belongs to the undistorted image and has its size."""
+    image = read_test_image("test1")
+
+    undistorted, mask = LanePipeline(calibration).lane_pixels(image)
+
+    assert np.array_equal(undistorted, calibration.undistort(image))
+    assert np.array_equal(mask, threshold_lane_pixels(undistorted))
+    assert mask.shape == image.shape[:2]
+
+
+def test_lane_pixels_of_an_image_of_the_other_camera_are_not_undistorted(calibration):
+    """The calibration does not apply to the second camera."""
+    image = read_test_image("solidYellowLeft")
+    undistorted, mask = LanePipeline(calibration).lane_pixels(image)
+    assert np.array_equal(undistorted, image)
+    assert mask.shape == image.shape[:2]
 
 
 # --------------------------------------------------------------------------- prepare
@@ -162,6 +185,59 @@ def test_process_finds_no_lane_in_an_empty_image(calibration):
     assert not result.plausible
     assert result.measurements is None
     assert result.fit.mode is FitMode.NONE
+    assert result.status is TrackStatus.LOST
+
+
+def test_process_reports_that_the_lane_was_found(calibration):
+    """Without a tracker an image shows the lane or it does not."""
+    result = LanePipeline(calibration).process(read_test_image("straight_lines1"))
+    assert result.status is TrackStatus.DETECTED
+
+
+# ------------------------------------------------------------------------- tracking
+
+
+def test_a_tracker_follows_the_frames_of_a_video(calibration, read_video_frames):
+    """The frames of a clear video section are all found and give measurements."""
+    frames = read_video_frames("project_video03.mp4", 20, 8)
+    pipeline = LanePipeline(calibration, 422.0, LaneTracker())
+
+    results = [pipeline.process(frame) for frame in frames]
+
+    assert all(result.status is TrackStatus.DETECTED for result in results)
+    assert all(result.plausible for result in results)
+    assert results[-1].fit.mode is not FitMode.TRACKED
+    assert abs(results[-1].measurements.vehicle_offset) < 0.9
+
+
+def test_a_tracker_holds_the_last_lane_while_the_lines_are_not_visible(
+    calibration, read_video_frames
+):
+    """A black frame between road frames keeps the lane and its measurements."""
+    frames = read_video_frames("project_video03.mp4", 20, 8)
+    pipeline = LanePipeline(calibration, 422.0, LaneTracker())
+    results = [pipeline.process(frame) for frame in frames]
+
+    held = pipeline.process(np.zeros_like(frames[0]))
+    again = pipeline.process(read_video_frames("project_video03.mp4", 20.4, 1)[0])
+
+    assert held.status is TrackStatus.HELD
+    assert held.fit.mode is FitMode.TRACKED
+    assert held.measurements == results[-1].measurements
+    assert again.status is TrackStatus.DETECTED
+
+
+def test_without_a_tracker_a_black_frame_loses_the_lane(calibration, read_video_frames):
+    """Only the tracker holds the lane."""
+    frames = read_video_frames("project_video03.mp4", 20, 3)
+    pipeline = LanePipeline(calibration, 422.0)
+    for frame in frames:
+        pipeline.process(frame)
+
+    result = pipeline.process(np.zeros_like(frames[0]))
+
+    assert result.status is TrackStatus.LOST
+    assert result.measurements is None
 
 
 @pytest.mark.parametrize(

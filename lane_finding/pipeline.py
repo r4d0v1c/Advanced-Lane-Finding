@@ -1,4 +1,4 @@
-"""The complete lane finding pipeline for one road image.
+"""The complete lane finding pipeline for a road image or the frames of a video.
 
 The steps are:
 
@@ -9,7 +9,8 @@ The steps are:
 5. measure the curvature of the lane and the position of the vehicle in meters.
 
 The camera is recognized by the resolution of the image, because each camera has its own
-road geometry (see :mod:`lane_finding.cameras`).
+road geometry (see :mod:`lane_finding.cameras`). For the frames of a video a tracker can be
+given, which follows the lane from frame to frame in the fourth step.
 """
 
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from lane_finding.lane_fit import LaneFit, fit_lane
 from lane_finding.measurements import LaneMeasurements, measure_lane, meters_per_pixel
 from lane_finding.perspective import PerspectiveTransform
 from lane_finding.thresholding import threshold_lane_pixels
+from lane_finding.tracking import LaneTracker, TrackStatus
 
 
 @dataclass(frozen=True, eq=False)
@@ -48,17 +50,21 @@ class LaneResult(PreparedImage):
     """Everything the pipeline found in a road image.
 
     Attributes:
-        fit: The lane lines in the bird's-eye view.
+        fit: The lane lines in the bird's-eye view. With a tracker these are the smoothed
+            lines, or the held ones when the lane was not found in this frame.
         measurements: Curvature, vehicle position and lane width in meters; ``None`` if
-            the lane lines do not describe a plausible lane.
+            there is no plausible lane.
+        status: Whether the lane was found in this image, is held from earlier frames of a
+            video or is lost. Without a tracker it is found or lost.
     """
 
     fit: LaneFit
     measurements: LaneMeasurements | None
+    status: TrackStatus
 
     @property
     def plausible(self) -> bool:
-        """Whether a plausible lane was found."""
+        """Whether there is a plausible lane (found in this image or held)."""
         return self.measurements is not None
 
 
@@ -70,7 +76,10 @@ class LanePipeline:
     """
 
     def __init__(
-        self, calibration: CameraCalibration | None = None, horizon_y: float | None = None
+        self,
+        calibration: CameraCalibration | None = None,
+        horizon_y: float | None = None,
+        tracker: LaneTracker | None = None,
     ) -> None:
         """Create a pipeline.
 
@@ -79,9 +88,12 @@ class LanePipeline:
                 of its images. Without it no image is undistorted.
             horizon_y: Row of the horizon to build the bird's-eye view with, instead of the
                 default one of each camera (it differs a little between videos).
+            tracker: Follows the lane through the frames of a video. Without it every image
+                is processed on its own. A tracker belongs to one video.
         """
         self.calibration = calibration
         self.horizon_y = horizon_y
+        self.tracker = tracker
         self._transforms: dict[tuple[int, int], PerspectiveTransform] = {}
 
     def _transform_for(self, camera: CameraProfile) -> PerspectiveTransform:
@@ -96,6 +108,23 @@ class LanePipeline:
         if camera.size not in self._transforms:
             self._transforms[camera.size] = PerspectiveTransform.for_camera(camera, self.horizon_y)
         return self._transforms[camera.size]
+
+    def lane_pixels(self, image: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Remove the distortion and select the lane-line pixels in the camera view.
+
+        Args:
+            image: 8-bit BGR road image.
+
+        Returns:
+            The undistorted image and the binary image of its lane-line pixels (0 and 255).
+
+        Raises:
+            ValueError: If the image is not an 8-bit BGR image.
+        """
+        height, width = image.shape[:2]
+        if self.calibration is not None and (width, height) == self.calibration.image_size:
+            image = self.calibration.undistort(image)
+        return image, threshold_lane_pixels(image)
 
     def prepare(self, image: np.ndarray) -> PreparedImage:
         """Remove the distortion and create the bird's-eye binary image.
@@ -112,11 +141,10 @@ class LanePipeline:
         """
         height, width = image.shape[:2]
         camera = camera_for_size(width, height)
-        if self.calibration is not None and (width, height) == self.calibration.image_size:
-            image = self.calibration.undistort(image)
+        undistorted, lane_mask = self.lane_pixels(image)
         transform = self._transform_for(camera)
-        binary = transform.warp(threshold_lane_pixels(image), cv2.INTER_NEAREST)
-        return PreparedImage(image, binary, transform, camera)
+        binary = transform.warp(lane_mask, cv2.INTER_NEAREST)
+        return PreparedImage(undistorted, binary, transform, camera)
 
     def process(self, image: np.ndarray) -> LaneResult:
         """Find the lane in a road image and measure it.
@@ -125,7 +153,7 @@ class LanePipeline:
             image: 8-bit BGR road image of a known camera.
 
         Returns:
-            The prepared image, the lane lines and, if the lane is plausible, its
+            The prepared image, the lane lines and, if there is a plausible lane, its
             measurements.
 
         Raises:
@@ -133,11 +161,24 @@ class LanePipeline:
                 image is not an 8-bit BGR image.
         """
         prepared = self.prepare(image)
-        fit = fit_lane(prepared.binary)
+        size = prepared.camera.size
+        if self.tracker is None:
+            fit = fit_lane(prepared.binary)
+            status = TrackStatus.DETECTED if fit.is_plausible(size) else TrackStatus.LOST
+        else:
+            tracked = self.tracker.update(prepared.binary)
+            fit, status = tracked.fit, tracked.status
         measurements = None
-        if fit.is_plausible(prepared.camera.size):
-            scale = meters_per_pixel(prepared.camera, self.horizon_y)
-            measurements = measure_lane(fit, prepared.camera.size, scale)
+        if status is not TrackStatus.LOST:
+            measurements = measure_lane(
+                fit, size, meters_per_pixel(prepared.camera, self.horizon_y)
+            )
         return LaneResult(
-            prepared.image, prepared.binary, prepared.transform, prepared.camera, fit, measurements
+            prepared.image,
+            prepared.binary,
+            prepared.transform,
+            prepared.camera,
+            fit,
+            measurements,
+            status,
         )
