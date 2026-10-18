@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from lane_finding.cameras import MAIN_CAMERA, SECOND_CAMERA
+from lane_finding.horizon import HorizonEstimator
 from lane_finding.lane_fit import FitMode
 from lane_finding.measurements import LANE_WIDTH_METERS, measure_lane, meters_per_pixel
 from lane_finding.pipeline import LanePipeline
@@ -258,3 +259,19 @@ def test_process_finds_the_lane_in_video_frames(
     assert result.plausible
     assert abs(result.measurements.vehicle_offset) < 0.9
     assert result.measurements.lane_width == pytest.approx(LANE_WIDTH_METERS, abs=0.5)
+
+
+def test_the_horizon_follows_the_frames_of_a_video(calibration, read_video_frames):
+    """Starting from the usual horizon, the pipeline adapts it from the frames seen so far."""
+    frames = read_video_frames("challenge02.mp4", 7, 150)
+    pipeline = LanePipeline(
+        calibration, tracker=LaneTracker(), horizon_estimator=HorizonEstimator(sample_every=3)
+    )
+
+    first = pipeline.process(frames[0])
+    results = [pipeline.process(frame) for frame in frames[1:]]
+
+    assert first.transform.source_points[0][1] == pytest.approx(MAIN_CAMERA.horizon_y + 40)
+    assert pipeline.horizon_y == pytest.approx(444, abs=8)
+    assert results[-1].transform.source_points[0][1] == pytest.approx(pipeline.horizon_y + 40)
+    assert sum(result.status is TrackStatus.DETECTED for result in results[-50:]) >= 45

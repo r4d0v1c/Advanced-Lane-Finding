@@ -15,6 +15,7 @@ previous frames and uses it in five ways:
 from dataclasses import dataclass
 from enum import Enum
 
+import cv2
 import numpy as np
 
 from lane_finding.lane_fit import (
@@ -25,6 +26,7 @@ from lane_finding.lane_fit import (
     fit_lane,
     search_around,
 )
+from lane_finding.perspective import PerspectiveTransform
 
 # Weight of the newest frame in the smoothed lane (exponential moving average): the lane
 # lags about (1 - weight) / weight = 4 frames behind a change.
@@ -122,6 +124,25 @@ def _has_similar_width(
     return bool(np.all(np.abs(change - 1) < MAX_WIDTH_CHANGE))
 
 
+def _reproject_curve(
+    coefficients: np.ndarray, old: PerspectiveTransform, new: PerspectiveTransform
+) -> np.ndarray:
+    """Express a curve of one bird's-eye view in another view of the same camera.
+
+    Args:
+        coefficients: ``(A, B, C)`` of the curve in the old view.
+        old: Transform of the old view.
+        new: Transform of the new view.
+
+    Returns:
+        The coefficients of the same road line in the new view (fitted to 20 points).
+    """
+    rows = np.linspace(0, old.size[1] - 1, 20)
+    points = np.column_stack([np.polyval(coefficients, rows), rows]).astype(np.float32)
+    moved = cv2.perspectiveTransform(points[None], new.matrix @ old.inverse_matrix)[0]
+    return np.polyfit(moved[:, 1], moved[:, 0], 2)
+
+
 class LaneTracker:
     """Follows the lane of one video from frame to frame.
 
@@ -180,6 +201,18 @@ class LaneTracker:
         elif self._confirms(detection, size):
             return self._accept(detection, reset=True)
         return self._reject(detection)
+
+    def reproject(self, old: PerspectiveTransform, new: PerspectiveTransform) -> None:
+        """Move the remembered lane into a new bird's-eye view, e.g. after the horizon moved.
+
+        Args:
+            old: Transform of the view the lane was tracked in.
+            new: Transform of the view the next frames come in.
+        """
+        if self._lane is not None:
+            self._lane = tuple(_reproject_curve(curve, old, new) for curve in self._lane)
+        if self._candidate is not None:
+            self._candidate = tuple(_reproject_curve(curve, old, new) for curve in self._candidate)
 
     def _agrees(self, fit: LaneFit, size: tuple[int, int]) -> bool:
         """Check that a detection continues the tracked lane.

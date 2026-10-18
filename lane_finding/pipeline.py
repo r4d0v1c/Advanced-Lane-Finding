@@ -10,7 +10,9 @@ The steps are:
 
 The camera is recognized by the resolution of the image, because each camera has its own
 road geometry (see :mod:`lane_finding.cameras`). For the frames of a video a tracker can be
-given, which follows the lane from frame to frame in the fourth step.
+given, which follows the lane from frame to frame in the fourth step, and a horizon
+estimator, which adapts the bird's-eye view to the horizon of the video from the frames seen
+so far.
 """
 
 from dataclasses import dataclass
@@ -20,11 +22,15 @@ import numpy as np
 
 from lane_finding.calibration import CameraCalibration
 from lane_finding.cameras import CameraProfile, camera_for_size
+from lane_finding.horizon import HorizonEstimator
 from lane_finding.lane_fit import LaneFit, fit_lane
 from lane_finding.measurements import LaneMeasurements, measure_lane, meters_per_pixel
 from lane_finding.perspective import PerspectiveTransform
 from lane_finding.thresholding import threshold_lane_pixels
 from lane_finding.tracking import LaneTracker, TrackStatus
+
+# The bird's-eye view is rebuilt when the estimated horizon moved by at least this many rows.
+HORIZON_UPDATE_ROWS = 1.0
 
 
 @dataclass(frozen=True, eq=False)
@@ -80,6 +86,7 @@ class LanePipeline:
         calibration: CameraCalibration | None = None,
         horizon_y: float | None = None,
         tracker: LaneTracker | None = None,
+        horizon_estimator: HorizonEstimator | None = None,
     ) -> None:
         """Create a pipeline.
 
@@ -90,24 +97,48 @@ class LanePipeline:
                 default one of each camera (it differs a little between videos).
             tracker: Follows the lane through the frames of a video. Without it every image
                 is processed on its own. A tracker belongs to one video.
+            horizon_estimator: Estimates the horizon of a video from the frames processed so
+                far; ``horizon_y`` then changes as the estimate changes. It belongs to one
+                video.
         """
         self.calibration = calibration
         self.horizon_y = horizon_y
         self.tracker = tracker
-        self._transforms: dict[tuple[int, int], PerspectiveTransform] = {}
+        self.horizon_estimator = horizon_estimator
+        self._transforms: dict[tuple[int, int], tuple[float | None, PerspectiveTransform]] = {}
 
     def _transform_for(self, camera: CameraProfile) -> PerspectiveTransform:
-        """Get the perspective transform of a camera, creating it on first use.
+        """Get the perspective transform of a camera for the current horizon.
 
         Args:
             camera: Profile of the camera.
 
         Returns:
-            The transform for images of the camera's resolution.
+            The transform for images of the camera's resolution, created again only when the
+            horizon changed.
         """
-        if camera.size not in self._transforms:
-            self._transforms[camera.size] = PerspectiveTransform.for_camera(camera, self.horizon_y)
-        return self._transforms[camera.size]
+        cached = self._transforms.get(camera.size)
+        if cached is None or cached[0] != self.horizon_y:
+            transform = PerspectiveTransform.for_camera(camera, self.horizon_y)
+            self._transforms[camera.size] = (self.horizon_y, transform)
+            return transform
+        return cached[1]
+
+    def _follow_horizon(self, lane_mask: np.ndarray, camera: CameraProfile) -> None:
+        """Update the horizon from the estimator and move the tracked lane into the new view.
+
+        Args:
+            lane_mask: Binary lane-pixel image of the current frame in the camera view.
+            camera: Profile of the camera.
+        """
+        estimate = self.horizon_estimator.update(lane_mask, camera)
+        current = camera.horizon_y if self.horizon_y is None else self.horizon_y
+        if estimate is None or abs(estimate - current) < HORIZON_UPDATE_ROWS:
+            return
+        old = self._transform_for(camera)
+        self.horizon_y = estimate
+        if self.tracker is not None:
+            self.tracker.reproject(old, self._transform_for(camera))
 
     def lane_pixels(self, image: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Remove the distortion and select the lane-line pixels in the camera view.
@@ -142,6 +173,8 @@ class LanePipeline:
         height, width = image.shape[:2]
         camera = camera_for_size(width, height)
         undistorted, lane_mask = self.lane_pixels(image)
+        if self.horizon_estimator is not None:
+            self._follow_horizon(lane_mask, camera)
         transform = self._transform_for(camera)
         binary = transform.warp(lane_mask, cv2.INTER_NEAREST)
         return PreparedImage(undistorted, binary, transform, camera)

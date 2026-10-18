@@ -5,7 +5,12 @@ import numpy as np
 import pytest
 
 from lane_finding.cameras import CAMERAS, MAIN_CAMERA, SECOND_CAMERA, CameraProfile
-from lane_finding.horizon import MIN_FRAMES, estimate_horizon, vanishing_point_row
+from lane_finding.horizon import (
+    MIN_FRAMES,
+    HorizonEstimator,
+    estimate_horizon,
+    vanishing_point_row,
+)
 from lane_finding.pipeline import LanePipeline
 
 CAMERA_IDS = [camera.name for camera in CAMERAS]
@@ -139,6 +144,47 @@ def test_no_frames_give_the_usual_horizon_of_the_camera():
     assert estimate_horizon([], SECOND_CAMERA) == SECOND_CAMERA.horizon_y
 
 
+# ----------------------------------------------------------------- HorizonEstimator
+
+
+def test_the_running_estimate_waits_for_enough_frames():
+    """Until enough frames gave a row, there is no estimate."""
+    estimator = HorizonEstimator(sample_every=1)
+    frame = converging_lines(MAIN_CAMERA, 440)
+
+    estimates = [estimator.update(frame, MAIN_CAMERA) for _ in range(MIN_FRAMES)]
+
+    assert estimates[:-1] == [None] * (MIN_FRAMES - 1)
+    assert estimates[-1] == pytest.approx(440, abs=4)
+
+
+def test_the_running_estimate_uses_only_every_nth_frame():
+    """Frames between the samples do not count."""
+    estimator = HorizonEstimator(sample_every=3)
+    frame = converging_lines(MAIN_CAMERA, 440)
+
+    estimates = [estimator.update(frame, MAIN_CAMERA) for _ in range(3 * MIN_FRAMES)]
+
+    assert estimates[3 * (MIN_FRAMES - 1) - 1] is None
+    assert estimates[3 * (MIN_FRAMES - 1)] == pytest.approx(440, abs=4)
+
+
+def test_the_running_estimate_follows_only_the_past():
+    """The estimate is the median of the frames so far and moves when the road changes."""
+    estimator = HorizonEstimator(sample_every=1)
+    for _ in range(5):
+        early = estimator.update(converging_lines(MAIN_CAMERA, 430), MAIN_CAMERA)
+    for _ in range(7):
+        later = estimator.update(converging_lines(MAIN_CAMERA, 450), MAIN_CAMERA)
+
+    assert early == pytest.approx(
+        vanishing_point_row(converging_lines(MAIN_CAMERA, 430), MAIN_CAMERA)
+    )
+    assert later == pytest.approx(
+        vanishing_point_row(converging_lines(MAIN_CAMERA, 450), MAIN_CAMERA)
+    )
+
+
 # -------------------------------------------------------------------- real videos
 
 
@@ -147,7 +193,7 @@ def test_no_frames_give_the_usual_horizon_of_the_camera():
     "video, seconds, expected, camera",
     [
         ("project_video03.mp4", range(2, 40, 3), 422, MAIN_CAMERA),
-        ("challenge02.mp4", np.arange(0.5, 8, 0.5), 444, MAIN_CAMERA),
+        ("challenge02.mp4", np.arange(0.5, 16, 0.5), 444, MAIN_CAMERA),
         ("project_video02.mp4", range(2, 26, 2), 310, SECOND_CAMERA),
     ],
 )

@@ -3,9 +3,10 @@
 Usage:
     python3 scripts/run_video.py [VIDEO ...] [--output-dir DIR]
 
-Without arguments every video of resources/test_videos_export is processed. First the
-horizon of the video is estimated from frames spread over the whole video, then every frame
-is processed with a tracker that follows the lane from frame to frame: it smooths the lane,
+Without arguments every video of resources/test_videos_export is processed frame by frame,
+using only the frames seen so far, as a system in a car would: the horizon is estimated from
+the frames so far (starting with the usual one of the camera), and a tracker follows the
+lane from frame to frame: it smooths the lane,
 shows the last lane (with a note) while the lane lines are not visible and ignores results
 that jump. The colors are the ones of scripts/run_images.py. The camera is recognized by
 the video resolution. Videos of the calibrated camera are undistorted first (run
@@ -17,18 +18,16 @@ import logging
 import sys
 import time
 from collections import Counter
-from collections.abc import Iterator
 from pathlib import Path
 
 import cv2
-import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))  # the scripts are in a subfolder: make lane_finding importable
 
 from lane_finding.calibration import CameraCalibration  # noqa: E402
 from lane_finding.cameras import camera_for_size  # noqa: E402
-from lane_finding.horizon import estimate_horizon  # noqa: E402
+from lane_finding.horizon import HorizonEstimator  # noqa: E402
 from lane_finding.overlay import draw_lane_overlay  # noqa: E402
 from lane_finding.pipeline import LanePipeline  # noqa: E402
 from lane_finding.tracking import LaneTracker, TrackStatus  # noqa: E402
@@ -38,9 +37,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_VIDEOS_DIR = REPO_ROOT / "resources" / "test_videos_export"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "output" / "videos"
 CALIBRATION_PATH = REPO_ROOT / "output" / "calibration.npz"
-
-# The horizon is estimated from a frame every this many seconds.
-HORIZON_SAMPLE_SECONDS = 0.25
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -68,28 +64,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def sample_lane_masks(
-    capture: cv2.VideoCapture, pipeline: LanePipeline, step: int
-) -> Iterator[np.ndarray]:
-    """Read a video from the start and select the lane pixels of every ``step``-th frame.
-
-    Args:
-        capture: Opened video.
-        pipeline: Pipeline that removes the distortion and selects the lane pixels.
-        step: Distance in frames between the frames that are used.
-
-    Yields:
-        The binary lane-pixel image of each used frame, in the camera view.
-    """
-    index = 0
-    while capture.grab():
-        if index % step == 0:
-            found, frame = capture.retrieve()
-            if found:
-                yield pipeline.lane_pixels(frame)[1]
-        index += 1
-
-
 def process_video(path: Path, calibration: CameraCalibration, output_dir: Path) -> bool:
     """Draw the lane on every frame of a video and save the result.
 
@@ -115,12 +89,9 @@ def process_video(path: Path, calibration: CameraCalibration, output_dir: Path) 
         return False
 
     logger.info("Processing %s ...", path.name)
-    step = max(1, round(HORIZON_SAMPLE_SECONDS * fps))
-    masks = sample_lane_masks(capture, LanePipeline(calibration), step)
-    horizon = estimate_horizon(masks, camera)
-    capture.release()
-
-    pipeline = LanePipeline(calibration, horizon, LaneTracker())
+    pipeline = LanePipeline(
+        calibration, tracker=LaneTracker(), horizon_estimator=HorizonEstimator()
+    )
     output_path = output_dir / f"{path.stem}.mp4"
     writer = cv2.VideoWriter(
         str(output_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height)
@@ -129,7 +100,6 @@ def process_video(path: Path, calibration: CameraCalibration, output_dir: Path) 
         raise SystemExit(f"Could not write {output_path}")
     counts = Counter()
     start = time.perf_counter()
-    capture = cv2.VideoCapture(str(path))
     while True:
         found, frame = capture.read()
         if not found:
@@ -145,9 +115,10 @@ def process_video(path: Path, calibration: CameraCalibration, output_dir: Path) 
     writer.release()
 
     frames = sum(counts.values())
+    horizon = camera.horizon_y if pipeline.horizon_y is None else pipeline.horizon_y
     share = {status: 100 * counts[status] / max(frames, 1) for status in TrackStatus}
     logger.info(
-        "%-20s horizon %5.1f | %4d frames | found %5.1f %%  held %5.1f %%  lost %5.1f %% | "
+        "%-20s final horizon %5.1f | %4d frames | found %5.1f %%  held %5.1f %%  lost %5.1f %% | "
         "%4.1f ms per frame",
         path.name,
         horizon,

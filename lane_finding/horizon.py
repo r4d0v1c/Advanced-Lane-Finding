@@ -7,8 +7,9 @@ a wrong one the lane looks like a funnel and the measured radius is off.
 
 The vanishing point is the intersection of the left and the right lane line. It is found
 from the line segments of the binary lane-pixel image of a frame. A single frame gives a
-noisy row (the lines are bent in a curve), so the median over many frames of the video is
-used.
+noisy row (the lines are bent in a curve), so the median over many frames is used. While a
+video is processed, :class:`HorizonEstimator` uses only the frames seen so far, as a system
+in a car would.
 """
 
 from collections.abc import Iterable
@@ -34,6 +35,8 @@ MAX_SEGMENTS_PER_SIDE = 40
 MAX_HORIZON_DEVIATION_FRACTION = 0.1
 # Frames with a usable estimate needed for the estimate of a video.
 MIN_FRAMES = 5
+# While a video is processed, every this many frames is used (about 4 per second at 25 fps).
+SAMPLE_EVERY_FRAMES = 6
 
 
 def vanishing_point_row(binary: np.ndarray, camera: CameraProfile) -> float | None:
@@ -85,22 +88,57 @@ def vanishing_point_row(binary: np.ndarray, camera: CameraProfile) -> float | No
     return float(np.median(rows))
 
 
+class HorizonEstimator:
+    """Estimates the horizon of a video while it is processed, from the frames seen so far.
+
+    Every ``sample_every``-th frame gives a vanishing point row; rows too far from the usual
+    horizon of the camera are not believed. The estimate is the median of all believed rows
+    so far, available once ``MIN_FRAMES`` of them were collected.
+    """
+
+    def __init__(self, sample_every: int = SAMPLE_EVERY_FRAMES) -> None:
+        """Create an estimator that has not seen any frame.
+
+        Args:
+            sample_every: Distance in frames between the frames that are used.
+        """
+        self.sample_every = sample_every
+        self._frames = 0
+        self._rows: list[float] = []
+
+    def update(self, binary: np.ndarray, camera: CameraProfile) -> float | None:
+        """Take the next frame of the video into account.
+
+        Args:
+            binary: Binary lane-pixel image of the frame in the camera view (0 and 255).
+            camera: Profile of the camera that took the video.
+
+        Returns:
+            The horizon row estimated from the frames so far, or ``None`` while fewer than
+            ``MIN_FRAMES`` frames gave a believable row.
+        """
+        if self._frames % self.sample_every == 0:
+            row = vanishing_point_row(binary, camera)
+            limit = MAX_HORIZON_DEVIATION_FRACTION * camera.size[1]
+            if row is not None and abs(row - camera.horizon_y) <= limit:
+                self._rows.append(row)
+        self._frames += 1
+        return float(np.median(self._rows)) if len(self._rows) >= MIN_FRAMES else None
+
+
 def estimate_horizon(binaries: Iterable[np.ndarray], camera: CameraProfile) -> float:
-    """Estimate the horizon row of a video from the binary lane-pixel images of its frames.
+    """Estimate the horizon row from the binary lane-pixel images of several frames.
 
     Args:
-        binaries: Binary lane-pixel images of frames spread over the video, in the camera
-            view (0 and 255).
-        camera: Profile of the camera that took the video.
+        binaries: Binary lane-pixel images of frames in the camera view (0 and 255).
+        camera: Profile of the camera that took them.
 
     Returns:
         The median of the vanishing point rows of the frames. If fewer than ``MIN_FRAMES``
         frames give a believable row, the usual horizon of the camera.
     """
-    limit = MAX_HORIZON_DEVIATION_FRACTION * camera.size[1]
-    rows = []
+    estimator = HorizonEstimator(sample_every=1)
+    estimate = None
     for binary in binaries:
-        row = vanishing_point_row(binary, camera)
-        if row is not None and abs(row - camera.horizon_y) <= limit:
-            rows.append(row)
-    return float(np.median(rows)) if len(rows) >= MIN_FRAMES else camera.horizon_y
+        estimate = estimator.update(binary, camera)
+    return camera.horizon_y if estimate is None else estimate

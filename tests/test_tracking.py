@@ -1,11 +1,14 @@
 """Tests for lane_finding.tracking."""
 
+import cv2
 import numpy as np
 import pytest
 from synthetic import curve, draw_lane, lane, max_error
 
 from lane_finding import tracking
+from lane_finding.cameras import MAIN_CAMERA
 from lane_finding.lane_fit import FitMode, fit_lane
+from lane_finding.perspective import PerspectiveTransform
 from lane_finding.tracking import (
     CONFIRMING_FRAMES,
     HOLD_FRAMES,
@@ -278,3 +281,37 @@ def test_a_missing_line_is_derived_with_the_width_the_lane_had():
     assert all(frame.status is DETECTED for frame in tracked)
     assert tracked[-1].fit.mode is FitMode.RESCUED
     assert max_error(tracked[-1].fit.left, left, size) < 6
+
+
+# ------------------------------------------------------------------ another bird's-eye view
+
+
+def test_the_lane_is_moved_into_a_new_view_when_the_horizon_changes():
+    """The tracked lane is the same road line, expressed in the view of the new horizon."""
+    size = MAIN_CAMERA.size
+    old = PerspectiveTransform.for_camera(MAIN_CAMERA, 420)
+    new = PerspectiveTransform.for_camera(MAIN_CAMERA, 425)
+    left, right = lane(size, slope=-0.05, shift=0.1)
+    tracker = LaneTracker()
+    run(tracker, [draw_lane(size, left, right)] * 5)
+    held_before = tracker.update(empty(size)).fit
+
+    tracker.reproject(old, new)
+    held_after = tracker.update(empty(size)).fit
+
+    for before, after in (
+        (held_before.left, held_after.left),
+        (held_before.right, held_after.right),
+    ):
+        rows = np.linspace(0, size[1] - 1, 8)
+        points = np.float32(np.column_stack([np.polyval(before, rows), rows]))[None]
+        expected = cv2.perspectiveTransform(points, new.matrix @ old.inverse_matrix)[0]
+        assert np.polyval(after, expected[:, 1]) == pytest.approx(expected[:, 0], abs=1)
+
+
+def test_reprojecting_an_empty_tracker_does_nothing():
+    """Without a lane there is nothing to move."""
+    tracker = LaneTracker()
+    view = PerspectiveTransform.for_camera(MAIN_CAMERA)
+    tracker.reproject(view, view)
+    assert tracker.update(empty(MAIN_CAMERA.size)).status is LOST
