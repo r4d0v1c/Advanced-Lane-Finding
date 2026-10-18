@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from lane_finding.thresholding import (
+    WHITE_MIN_CONTRAST,
     WHITE_MIN_LIGHTNESS,
     remove_wide_runs,
     threshold_lane_pixels,
@@ -43,24 +44,44 @@ def solid(color: tuple[int, int, int], height: int = 4, width: int = 4) -> np.nd
 def synthetic_road() -> tuple[np.ndarray, np.ndarray]:
     """Draw a road image with known lane lines and distractors.
 
-    The image is 400 pixels wide, so white runs of 32 pixels or more are removed.
+    The image is 400 pixels wide, so runs of 20 pixels or more are removed and a white
+    pixel is compared with the pixels 8 pixels to its left and right.
 
     Returns:
         The BGR image and the binary image that should be produced from it: a yellow
-        and a white stripe (12 pixels wide) are lane pixels, while a white and a
-        yellow block (100 pixels wide), a concrete patch and a sky patch are not.
+        stripe (12 pixels wide) and a white stripe (6 pixels wide) are lane pixels, while
+        a white and a yellow block (100 pixels wide), a concrete patch and a sky patch are
+        not.
     """
     image = solid(ASPHALT, height=200, width=400)
     image[:, 100:112] = YELLOW_PAINT
-    image[:, 300:312] = WHITE_PAINT
+    image[:, 300:306] = WHITE_PAINT
     image[20:60, 150:250] = WHITE_PAINT  # too wide for a lane line
     image[70:90, 150:250] = YELLOW_PAINT  # too wide for a lane line
     image[100:140, 150:250] = CONCRETE
     image[150:190, 150:250] = SKY_BLUE
     expected = np.zeros(image.shape[:2], np.uint8)
     expected[:, 100:112] = 255
-    expected[:, 300:312] = 255
+    expected[:, 300:306] = 255
     return image, expected
+
+
+def stripe(
+    color: tuple[int, int, int], background: tuple[int, int, int] = ASPHALT, width: int = 6
+) -> np.ndarray:
+    """Draw a vertical stripe across a 400 pixels wide road image.
+
+    Args:
+        color: BGR color of the stripe.
+        background: BGR color of the road.
+        width: Width of the stripe in pixels; it starts at column 200.
+
+    Returns:
+        8-bit BGR image.
+    """
+    image = solid(background, height=10, width=400)
+    image[:, 200 : 200 + width] = color
+    return image
 
 
 @pytest.mark.parametrize(
@@ -82,16 +103,50 @@ def test_yellow_mask_selects_only_yellow(color, expected):
     assert yellow_mask(solid(color)).any() == expected
 
 
-def test_white_mask_threshold_boundary():
-    """Gray pixels are white exactly from the minimum lightness upwards."""
-    assert white_mask(solid((WHITE_MIN_LIGHTNESS,) * 3)).all()
-    assert not white_mask(solid((WHITE_MIN_LIGHTNESS - 1,) * 3)).any()
+def test_white_mask_selects_a_light_stripe_from_the_minimum_lightness_upwards():
+    """A narrow gray stripe on asphalt is white exactly from the minimum lightness upwards."""
+    assert white_mask(stripe((WHITE_MIN_LIGHTNESS,) * 3))[:, 200:206].all()
+    assert not white_mask(stripe((WHITE_MIN_LIGHTNESS - 1,) * 3)).any()
 
 
-@pytest.mark.parametrize("color", [YELLOW_PAINT, SKY_BLUE, CONCRETE, ASPHALT])
-def test_white_mask_ignores_dark_and_colored_pixels(color):
-    """Yellow paint, sky, concrete and asphalt are not white."""
-    assert not white_mask(solid(color)).any()
+def test_white_mask_needs_a_darker_road_on_both_sides():
+    """A stripe is white only if it is lighter than the road by the minimum contrast."""
+    road = (200, 200, 200)
+    lighter = (200 + WHITE_MIN_CONTRAST,) * 3
+    slightly_lighter = (199 + WHITE_MIN_CONTRAST,) * 3
+    assert white_mask(stripe(lighter, background=road))[:, 200:206].all()
+    assert not white_mask(stripe(slightly_lighter, background=road)).any()
+
+
+def test_white_mask_ignores_wide_bright_areas():
+    """Sunlit asphalt or concrete is bright, but it has no darker road on both sides."""
+    assert not white_mask(stripe(WHITE_PAINT, width=100)).any()
+    assert not white_mask(solid(WHITE_PAINT, height=10, width=400)).any()
+
+
+def test_white_mask_keeps_only_the_middle_of_a_wider_line():
+    """A pixel near the edge of a line wider than the comparison distance sees the line."""
+    selected = np.flatnonzero(white_mask(stripe(WHITE_PAINT, width=12))[0])
+    assert selected.tolist() == [204, 205, 206, 207]
+
+
+def test_white_mask_keeps_a_line_in_the_shade():
+    """A white line in a shadow is far less bright, but still lighter than the road."""
+    assert white_mask(stripe((170, 170, 170), background=(50, 50, 50)))[:, 200:206].all()
+
+
+def test_white_mask_ignores_bright_strips_at_the_image_borders():
+    """Outside the image counts as white, so a bright strip cut by a border is no line."""
+    image = solid(ASPHALT, height=10, width=400)
+    image[:, :5] = WHITE_PAINT
+    image[:, 395:] = WHITE_PAINT
+    assert not white_mask(image).any()
+
+
+@pytest.mark.parametrize("color", [YELLOW_PAINT, ASPHALT, (40, 150, 60)])
+def test_white_mask_ignores_dark_and_colored_stripes(color):
+    """Yellow paint, asphalt and green are too dark to be a white line."""
+    assert not white_mask(stripe(color)).any()
 
 
 @pytest.mark.parametrize("max_width", [30, 31])
@@ -127,6 +182,12 @@ def test_threshold_lane_pixels_on_synthetic_road():
     """Lane stripes are found, while wide white or yellow areas, concrete and sky are not."""
     image, expected = synthetic_road()
     assert np.array_equal(threshold_lane_pixels(image), expected)
+
+
+def test_threshold_lane_pixels_removes_areas_wider_than_a_line():
+    """Lines cross a row with at most about 3 % of the width; 6 % is something else."""
+    assert threshold_lane_pixels(stripe(YELLOW_PAINT, width=12)).any()  # 3 % of 400 pixels
+    assert not threshold_lane_pixels(stripe(YELLOW_PAINT, width=24)).any()  # 6 %
 
 
 def test_threshold_lane_pixels_returns_binary_uint8_image():
@@ -199,11 +260,12 @@ def test_dry_grass_next_to_the_road_is_removed():
 
 
 @pytest.mark.parametrize("seconds", [32.0, 44.0])
-def test_sunlit_asphalt_is_not_selected_as_lane(seconds, read_video_frame):
-    """Overexposed asphalt (challenge video) is largely removed by the width filter."""
+def test_sunlit_asphalt_is_not_selected_as_white(seconds, read_video_frame):
+    """Of the many bright pixels of sunlit asphalt (challenge video) few are taken as white."""
     frame = read_video_frame("challenge03.mp4", seconds)
     lower_half = slice(frame.shape[0] // 2, None)
-    without_filter = cv2.bitwise_or(yellow_mask(frame), white_mask(frame))[lower_half]
-    with_filter = threshold_lane_pixels(frame)[lower_half]
-    assert np.count_nonzero(with_filter) < 0.6 * np.count_nonzero(without_filter)
-    assert np.count_nonzero(with_filter) < 0.15 * with_filter.size
+    hls = cv2.cvtColor(frame, cv2.COLOR_BGR2HLS)
+    bright = cv2.inRange(hls, (0, 200, 0), (179, 255, 255))[lower_half]
+    white = white_mask(frame)[lower_half]
+    assert np.count_nonzero(white) < 0.25 * np.count_nonzero(bright)
+    assert np.count_nonzero(threshold_lane_pixels(frame)[lower_half]) < 0.1 * white.size

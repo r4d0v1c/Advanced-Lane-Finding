@@ -3,7 +3,7 @@
 Lane lines are either yellow or white, so two color masks are combined:
 
 * yellow: a hue range with enough saturation and brightness (HSV color space),
-* white: high lightness (HLS color space).
+* white: a bright stripe, lighter than the road on both sides (HLS lightness).
 
 Regions that are far wider than any lane line, such as sunlit asphalt, vehicles or
 dry grass, are removed from both masks.
@@ -18,14 +18,19 @@ import numpy as np
 YELLOW_LOWER = (15, 80, 80)
 YELLOW_UPPER = (35, 255, 255)
 
-# White lane lines: minimum HLS lightness (0-255). Lower values start to select
-# bright concrete, higher values lose faint dashes.
-WHITE_MIN_LIGHTNESS = 200
+# White lane lines: a pixel must have at least this HLS lightness (0-255) and be lighter by
+# at least WHITE_MIN_CONTRAST than the pixels this fraction of the image width to its left
+# and to its right. A line is a narrow bright stripe, while sunlit asphalt or concrete is
+# bright over a wide area and has no darker road next to it. The lower lightness than a
+# plain brightness threshold needs (200) keeps lines in the shade.
+WHITE_MIN_LIGHTNESS = 150
+WHITE_MIN_CONTRAST = 30
+WHITE_CONTRAST_DISTANCE_FRACTION = 0.02
 
 # Runs at least this wide (as a fraction of the image width) cannot belong to a lane
 # line and are removed. In the test material a line crosses a pixel row with at most
 # about 3 % of the width, even in sharp curves.
-MAX_LINE_RUN_FRACTION = 0.08
+MAX_LINE_RUN_FRACTION = 0.05
 
 
 def _require_bgr(image: np.ndarray) -> None:
@@ -63,21 +68,35 @@ def yellow_mask(image: np.ndarray) -> np.ndarray:
 
 
 def white_mask(image: np.ndarray) -> np.ndarray:
-    """Select the bright (white) pixels of an image.
+    """Select the pixels of white lines: bright pixels that are lighter than both sides.
+
+    Each pixel is compared with the pixels ``WHITE_CONTRAST_DISTANCE_FRACTION`` of the
+    image width to its left and to its right (outside the image counts as white). A line
+    narrower than that distance is selected completely, a wider one only in its middle
+    (enough for the fit). Lane lines cross a row with at most about 3 % of the width, less
+    than twice the distance, at which a line would vanish.
 
     Args:
         image: 8-bit BGR image.
 
     Returns:
-        Mask of the same height and width as the image with 255 for pixels whose
-        HLS lightness is at least ``WHITE_MIN_LIGHTNESS`` and 0 elsewhere.
+        Mask of the same height and width as the image with 255 for pixels whose HLS
+        lightness is at least ``WHITE_MIN_LIGHTNESS`` and at least ``WHITE_MIN_CONTRAST``
+        above the lightness on both sides, and 0 elsewhere.
 
     Raises:
         ValueError: If the input is not an 8-bit BGR image.
     """
     _require_bgr(image)
-    hls = cv2.cvtColor(image, cv2.COLOR_BGR2HLS)
-    return cv2.inRange(hls, (0, WHITE_MIN_LIGHTNESS, 0), (179, 255, 255))
+    lightness = cv2.cvtColor(image, cv2.COLOR_BGR2HLS)[:, :, 1]
+    distance = max(1, round(WHITE_CONTRAST_DISTANCE_FRACTION * image.shape[1]))
+    left = np.full_like(lightness, 255)
+    left[:, distance:] = lightness[:, :-distance]
+    right = np.full_like(lightness, 255)
+    right[:, :-distance] = lightness[:, distance:]
+    contrast = cv2.subtract(lightness, cv2.max(left, right))
+    bright = cv2.inRange(lightness, WHITE_MIN_LIGHTNESS, 255)
+    return cv2.bitwise_and(bright, cv2.inRange(contrast, WHITE_MIN_CONTRAST, 255))
 
 
 def remove_wide_runs(mask: np.ndarray, max_width: int) -> np.ndarray:
