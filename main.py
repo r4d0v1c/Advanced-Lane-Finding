@@ -1,7 +1,7 @@
 """Find the lane in videos and draw it on every frame together with its measurements.
 
 Usage:
-    python3 scripts/run_video.py [VIDEO ...] [--output-dir DIR]
+    python3 main.py [VIDEO ...] [--output-dir DIR]
 
 Without arguments every video of resources/test_videos_export is processed frame by frame,
 using only the frames seen so far, as a system in a car would: the horizon is estimated from
@@ -22,8 +22,8 @@ from pathlib import Path
 
 import cv2
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT))  # the scripts are in a subfolder: make lane_finding importable
+REPO_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(REPO_ROOT))  # make lane_finding importable from any working folder
 
 from lane_finding.calibration import CameraCalibration  # noqa: E402
 from lane_finding.cameras import camera_for_size  # noqa: E402
