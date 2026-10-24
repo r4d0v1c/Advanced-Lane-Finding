@@ -17,12 +17,10 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from lane_finding.cameras import CameraProfile
+from lane_finding.cameras import LANE_WIDTH_METERS, CameraProfile
 from lane_finding.lane_fit import LaneFit
 from lane_finding.perspective import LANE_WIDTH_FRACTION
 
-# Width of a lane, as in the course material (a motorway lane is 12 ft = 3.66 m).
-LANE_WIDTH_METERS = 3.7
 # The vehicle's axis, as a fraction of the image width.
 CAR_POSITION_FRACTION = 0.5
 # A radius above this is shown as "straight": the curvature of such a gentle bend is smaller

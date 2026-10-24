@@ -4,7 +4,8 @@ Usage:
     python3 scripts/threshold.py [IMAGE ...] [--output-dir DIR]
 
 Without arguments every image of resources/test_images_export is processed. The
-images are thresholded as they are; undistortion is part of the full pipeline.
+images are thresholded as they are; undistortion is part of the full pipeline. The camera
+is recognized by the image resolution; its geometry tells how wide the lane is at every row.
 """
 
 import argparse
@@ -17,7 +18,7 @@ import cv2
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))  # the scripts are in a subfolder: make lane_finding importable
 
-from lane_finding.thresholding import threshold_lane_pixels  # noqa: E402
+from lane_finding.pipeline import LanePipeline  # noqa: E402
 from lane_finding.visualization import side_by_side  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -67,15 +68,19 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(f"No images found in {DEFAULT_IMAGES_DIR}")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    pipeline = LanePipeline()  # without a calibration the images stay as they are
     saved = 0
     for path in image_paths:
         image = cv2.imread(str(path))
         if image is None:
             logger.warning("Skipping %s: image could not be read", path)
             continue
-        comparison = side_by_side(
-            [image, threshold_lane_pixels(image)], ["Original", "Binary"], PREVIEW_SCALE
-        )
+        try:
+            _, binary = pipeline.lane_pixels(image)
+        except ValueError as error:
+            logger.warning("Skipping %s: %s", path, error)
+            continue
+        comparison = side_by_side([image, binary], ["Original", "Binary"], PREVIEW_SCALE)
         cv2.imwrite(str(args.output_dir / f"{path.stem}.png"), comparison)
         saved += 1
     logger.info("Saved %d comparison images to %s", saved, args.output_dir)

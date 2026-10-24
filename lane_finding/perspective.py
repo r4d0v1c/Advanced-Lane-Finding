@@ -81,7 +81,8 @@ class PerspectiveTransform:
         Returns:
             The transform for images of the camera's resolution.
         """
-        return cls(camera.source_points(horizon_y), destination_points(camera.size), camera.size)
+        region = camera.region_of_interest(horizon_y)
+        return cls(region, destination_points(camera.size), camera.size)
 
     def warp(self, image: np.ndarray, interpolation: int = cv2.INTER_LINEAR) -> np.ndarray:
         """Transform a camera image to the bird's-eye view.

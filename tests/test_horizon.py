@@ -189,11 +189,13 @@ def test_the_running_estimate_follows_only_the_past():
 
 
 # The horizon of each video was measured earlier (see cameras.py): it differs from video to video.
+# For challenge02 it was also measured independently, as the row at which the fitted lane lines
+# of the same frames are parallel in the bird's-eye view (median 440).
 @pytest.mark.parametrize(
     "video, seconds, expected, camera",
     [
         ("project_video03.mp4", range(2, 40, 3), 422, MAIN_CAMERA),
-        ("challenge02.mp4", np.arange(0.5, 16, 0.5), 444, MAIN_CAMERA),
+        ("challenge02.mp4", np.arange(0.5, 16, 0.5), 440, MAIN_CAMERA),
         ("project_video02.mp4", range(2, 26, 2), 310, SECOND_CAMERA),
     ],
 )

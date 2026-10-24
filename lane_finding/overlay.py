@@ -21,7 +21,7 @@ LINE_OPACITY = 0.9
 # Width of the drawn lane lines in the bird's-eye view as a fraction of the image width.
 LINE_WIDTH_FRACTION = 0.012
 NO_LANE_TEXT = "No plausible lane"
-HELD_TEXT = "Lane lines not visible: last lane held"
+HELD_TEXT = "Lane not detected"
 
 # Values of the label image the lane is drawn into (0 is the background).
 AREA_LABEL = 1
@@ -82,8 +82,9 @@ def draw_lane_overlay(
 
     The lane area is green and its boundaries are red (left) and blue (right). The text at
     the top gives the radius of curvature, the position of the vehicle and the lane width.
-    A lane that is held from earlier frames of a video is drawn as well, with a note.
-    Without measurements (no plausible lane) only a note is written.
+    Only a lane found in this image is drawn. A lane that a tracker still holds from earlier
+    frames of a video is not drawn, because it no longer shows where the road is: only a
+    note is written, as when there is no plausible lane.
 
     Args:
         image: 8-bit BGR camera image the lane was found in.
@@ -91,13 +92,18 @@ def draw_lane_overlay(
         fit: The lane lines in the bird's-eye view.
         measurements: Measurements of the lane made from the fit, or ``None`` if there is no
             plausible lane (then no lane is drawn).
-        status: Whether the lane was found in this image or is held from earlier frames.
+        status: Whether the lane was found in this image or is held from earlier frames
+            (then it is not drawn).
 
     Returns:
         BGR copy of the image with the lane drawn on it.
     """
     height, width = image.shape[:2]
     canvas = image.copy()
+    if status is TrackStatus.HELD:
+        return draw_text_lines(
+            canvas, [HELD_TEXT], (30, round(0.09 * height)), scale=1.2 * width / 1280, thickness=2
+        )
     if measurements is not None:
         labels = transform.unwarp(_lane_labels(fit, (width, height)), cv2.INTER_NEAREST)
         _blend(canvas, labels == AREA_LABEL, AREA_COLOR, AREA_OPACITY)
@@ -105,8 +111,6 @@ def draw_lane_overlay(
         _blend(canvas, labels == RIGHT_LABEL, RIGHT_LINE_COLOR, LINE_OPACITY)
 
     lines = measurements.text_lines() if measurements is not None else [NO_LANE_TEXT]
-    if status is TrackStatus.HELD:
-        lines.append(HELD_TEXT)
     return draw_text_lines(
         canvas, lines, (30, round(0.09 * height)), scale=1.2 * width / 1280, thickness=2
     )

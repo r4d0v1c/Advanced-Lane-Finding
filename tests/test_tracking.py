@@ -283,6 +283,53 @@ def test_a_missing_line_is_derived_with_the_width_the_lane_had():
     assert max_error(tracked[-1].fit.left, left, size) < 6
 
 
+def test_a_wrongly_derived_line_is_replaced_as_soon_as_both_lines_are_seen():
+    """A guessed line does not confirm itself: the real line takes its place at once."""
+    size = (1280, 720)
+    left = curve(size, 0.2, -0.05, 0.1)
+    right = curve(size, 0.8, -0.05, 0.1)  # the lane is wider than the nominal one
+    tracker = LaneTracker()
+    first = run(tracker, [draw_lane(size, left, None)] * 10)[-1]
+    assert first.fit.mode is FitMode.RESCUED
+    assert max_error(first.fit.right, right, size) > 0.05 * size[0]  # derived too narrow
+
+    tracked = tracker.update(draw_lane(size, left, right))
+
+    assert tracked.status is DETECTED
+    assert tracked.fit.mode is FitMode.INDEPENDENT
+    assert max_error(tracked.fit.right, right, size) < 3
+
+
+def test_a_lane_of_another_width_is_rejected_while_the_width_is_fresh():
+    """Right after both lines were seen a line at another width is not taken."""
+    size = (1280, 720)
+    left = curve(size, 0.2, -0.05, 0.1)
+    right = curve(size, 0.8, -0.05, 0.1)
+    tracker = LaneTracker()
+    run(tracker, [draw_lane(size, left, right)] * 10)
+    run(tracker, [draw_lane(size, left, None)] * (MAX_MISSED_FRAMES - 1))
+
+    tracked = tracker.update(draw_lane(size, left, curve(size, 0.9, -0.05, 0.1)))
+
+    assert tracked.fit.mode is FitMode.RESCUED  # the right line is derived with the old width
+    assert max_error(tracked.fit.right, right, size) < 6
+
+
+def test_an_old_width_does_not_keep_out_the_lines_seen_now():
+    """A width measured long ago (perhaps in another view) does not veto two seen lines."""
+    size = (1280, 720)
+    left = curve(size, 0.2, -0.05, 0.1)
+    wider_right = curve(size, 0.9, -0.05, 0.1)
+    tracker = LaneTracker()
+    run(tracker, [draw_lane(size, left, curve(size, 0.8, -0.05, 0.1))] * 10)
+    run(tracker, [draw_lane(size, left, None)] * (MAX_MISSED_FRAMES + 1))
+
+    tracked = tracker.update(draw_lane(size, left, wider_right))
+
+    assert tracked.status is DETECTED
+    assert max_error(tracked.fit.right, wider_right, size) < 3
+
+
 # ------------------------------------------------------------------ another bird's-eye view
 
 

@@ -4,12 +4,6 @@ The horizon is the image row where the parallel lane lines meet (their vanishing
 moves with the pitch of the car and the slope of the road, so it is a little different in
 every video. The bird's-eye view is accurate only if it is built with the right row: with
 a wrong one the lane looks like a funnel and the measured radius is off.
-
-The vanishing point is the intersection of the left and the right lane line. It is found
-from the line segments of the binary lane-pixel image of a frame. A single frame gives a
-noisy row (the lines are bent in a curve), so the median over many frames is used. While a
-video is processed, :class:`HorizonEstimator` uses only the frames seen so far, as a system
-in a car would.
 """
 
 from collections.abc import Iterable

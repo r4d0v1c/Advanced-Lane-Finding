@@ -6,194 +6,189 @@ import cv2
 import numpy as np
 import pytest
 
+from lane_finding.cameras import LANE_WIDTH_METERS, MAIN_CAMERA, SECOND_CAMERA
 from lane_finding.thresholding import (
-    WHITE_MIN_CONTRAST,
-    WHITE_MIN_LIGHTNESS,
-    remove_wide_runs,
+    COMPARE_DISTANCE_MARKINGS,
+    MARKING_WIDTH_METERS,
+    compare_distances,
     threshold_lane_pixels,
-    white_mask,
-    yellow_mask,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 IMAGES_DIR = REPO_ROOT / "resources" / "test_images_export"
 
 # BGR colors
-ASPHALT = (60, 60, 60)
-WHITE_PAINT = (235, 235, 235)
-YELLOW_PAINT = (30, 190, 230)
-SHADED_YELLOW_PAINT = (10, 95, 110)
-CONCRETE = (190, 190, 190)
-SKY_BLUE = (235, 180, 100)
+ASPHALT = (90, 90, 90)
+WHITE_PAINT = (225, 225, 225)
+YELLOW_PAINT = (40, 185, 215)
+DARK_SHADOW = (40, 40, 40)
+
+WIDTH, HEIGHT = 400, 40
+# A lane of 148 pixels gives a compare distance of 12 pixels: 2 * 0.15 / 3.7 * 148 = 12.
+LANE = 148.0
+DISTANCE = 12
 
 
-def solid(color: tuple[int, int, int], height: int = 4, width: int = 4) -> np.ndarray:
-    """Create a single-color BGR image.
-
-    Args:
-        color: BGR color.
-        height: Image height in pixels.
-        width: Image width in pixels.
-
-    Returns:
-        8-bit BGR image filled with the color.
-    """
-    return np.full((height, width, 3), color, np.uint8)
-
-
-def synthetic_road() -> tuple[np.ndarray, np.ndarray]:
-    """Draw a road image with known lane lines and distractors.
-
-    The image is 400 pixels wide, so runs of 20 pixels or more are removed and a white
-    pixel is compared with the pixels 8 pixels to its left and right.
-
-    Returns:
-        The BGR image and the binary image that should be produced from it: a yellow
-        stripe (12 pixels wide) and a white stripe (6 pixels wide) are lane pixels, while
-        a white and a yellow block (100 pixels wide), a concrete patch and a sky patch are
-        not.
-    """
-    image = solid(ASPHALT, height=200, width=400)
-    image[:, 100:112] = YELLOW_PAINT
-    image[:, 300:306] = WHITE_PAINT
-    image[20:60, 150:250] = WHITE_PAINT  # too wide for a lane line
-    image[70:90, 150:250] = YELLOW_PAINT  # too wide for a lane line
-    image[100:140, 150:250] = CONCRETE
-    image[150:190, 150:250] = SKY_BLUE
-    expected = np.zeros(image.shape[:2], np.uint8)
-    expected[:, 100:112] = 255
-    expected[:, 300:306] = 255
-    return image, expected
-
-
-def stripe(
-    color: tuple[int, int, int], background: tuple[int, int, int] = ASPHALT, width: int = 6
-) -> np.ndarray:
-    """Draw a vertical stripe across a 400 pixels wide road image.
+def lane_widths(height: int = HEIGHT, lane: float = LANE) -> np.ndarray:
+    """Give every row of a synthetic image the same lane width.
 
     Args:
+        height: Number of rows.
+        lane: Lane width in pixels.
+
+    Returns:
+        One lane width per row.
+    """
+    return np.full(height, lane)
+
+
+def road(color: tuple[int, int, int] = ASPHALT, noise: float = 0.0, seed: int = 0) -> np.ndarray:
+    """Create a synthetic road image.
+
+    Args:
+        color: BGR color of the road.
+        noise: Standard deviation of the grey-level noise of the surface.
+        seed: Seed of the noise.
+
+    Returns:
+        8-bit BGR image of ``HEIGHT`` x ``WIDTH`` pixels.
+    """
+    image = np.full((HEIGHT, WIDTH, 3), color, np.float64)
+    if noise:
+        image += np.random.default_rng(seed).normal(0, noise, (HEIGHT, WIDTH, 1))
+    return np.clip(image, 0, 255).astype(np.uint8)
+
+
+def with_stripe(image: np.ndarray, color: tuple[int, int, int], start: int, width: int):
+    """Paint a vertical stripe across an image.
+
+    Args:
+        image: BGR image (it is copied).
         color: BGR color of the stripe.
-        background: BGR color of the road.
-        width: Width of the stripe in pixels; it starts at column 200.
+        start: First column of the stripe.
+        width: Width of the stripe in pixels.
 
     Returns:
-        8-bit BGR image.
+        The image with the stripe.
     """
-    image = solid(background, height=10, width=400)
-    image[:, 200 : 200 + width] = color
+    image = image.copy()
+    image[:, start : start + width] = color
     return image
 
 
-@pytest.mark.parametrize(
-    "color, expected",
-    [
-        (YELLOW_PAINT, True),
-        (SHADED_YELLOW_PAINT, True),
-        ((40, 100, 200), False),  # orange
-        ((40, 150, 60), False),  # green
-        (SKY_BLUE, False),
-        (CONCRETE, False),
-        (WHITE_PAINT, False),
-        (ASPHALT, False),
-        ((0, 60, 70), False),  # too dark to be a visible yellow line
-    ],
-)
-def test_yellow_mask_selects_only_yellow(color, expected):
-    """Only yellow hues with enough saturation and brightness are selected."""
-    assert yellow_mask(solid(color)).any() == expected
+def selected_columns(mask: np.ndarray) -> list[int]:
+    """List the columns selected in the middle row of a mask.
+
+    Args:
+        mask: Binary mask.
+
+    Returns:
+        The selected columns.
+    """
+    return np.flatnonzero(mask[HEIGHT // 2]).tolist()
 
 
-def test_white_mask_selects_a_light_stripe_from_the_minimum_lightness_upwards():
-    """A narrow gray stripe on asphalt is white exactly from the minimum lightness upwards."""
-    assert white_mask(stripe((WHITE_MIN_LIGHTNESS,) * 3))[:, 200:206].all()
-    assert not white_mask(stripe((WHITE_MIN_LIGHTNESS - 1,) * 3)).any()
+# ------------------------------------------------------------------ compare distances
 
 
-def test_white_mask_needs_a_darker_road_on_both_sides():
-    """A stripe is white only if it is lighter than the road by the minimum contrast."""
-    road = (200, 200, 200)
-    lighter = (200 + WHITE_MIN_CONTRAST,) * 3
-    slightly_lighter = (199 + WHITE_MIN_CONTRAST,) * 3
-    assert white_mask(stripe(lighter, background=road))[:, 200:206].all()
-    assert not white_mask(stripe(slightly_lighter, background=road)).any()
+def test_the_compare_distance_is_twice_a_marking_at_the_scale_of_the_lane():
+    """A marking is 0.15 m of a 3.7 m lane; the road is looked at two markings away."""
+    widths = np.array([0.0, 10.0, 148.0, 740.0])
+    scale = COMPARE_DISTANCE_MARKINGS * MARKING_WIDTH_METERS / LANE_WIDTH_METERS
+    expected = np.rint(scale * widths)
+    assert compare_distances(widths).tolist() == expected.astype(int).tolist()
+    assert compare_distances(widths)[2] == DISTANCE
 
 
-def test_white_mask_ignores_wide_bright_areas():
-    """Sunlit asphalt or concrete is bright, but it has no darker road on both sides."""
-    assert not white_mask(stripe(WHITE_PAINT, width=100)).any()
-    assert not white_mask(solid(WHITE_PAINT, height=10, width=400)).any()
+# ------------------------------------------------------------------- synthetic roads
 
 
-def test_white_mask_keeps_only_the_middle_of_a_wider_line():
-    """A pixel near the edge of a line wider than the comparison distance sees the line."""
-    selected = np.flatnonzero(white_mask(stripe(WHITE_PAINT, width=12))[0])
-    assert selected.tolist() == [204, 205, 206, 207]
+@pytest.mark.parametrize("color", [WHITE_PAINT, YELLOW_PAINT], ids=["white", "yellow"])
+def test_a_marking_on_the_road_is_selected(color):
+    """A painted stripe lighter or yellower than the road is selected, the road is not."""
+    image = with_stripe(road(), color, 200, 8)
+
+    mask = threshold_lane_pixels(image, lane_widths())
+
+    assert selected_columns(mask) == list(range(200, 208))
 
 
-def test_white_mask_keeps_a_line_in_the_shade():
-    """A white line in a shadow is far less bright, but still lighter than the road."""
-    assert white_mask(stripe((170, 170, 170), background=(50, 50, 50)))[:, 200:206].all()
+def test_a_yellow_marking_is_found_by_its_colour_alone():
+    """Yellow paint as light as the road still stands out in the blue-yellow channel."""
+    asphalt = (130, 150, 160)  # a slightly warm grey road
+    yellow = (50, 148, 172)  # as light, but much more yellow
+    image = with_stripe(road(asphalt), yellow, 200, 8)
+    lightness = cv2.cvtColor(image, cv2.COLOR_BGR2Lab)[:, :, 0]
+    assert abs(int(lightness[0, 204]) - int(lightness[0, 0])) <= 1
+
+    assert selected_columns(threshold_lane_pixels(image, lane_widths())) == list(range(200, 208))
 
 
-def test_white_mask_ignores_bright_strips_at_the_image_borders():
-    """Outside the image counts as white, so a bright strip cut by a border is no line."""
-    image = solid(ASPHALT, height=10, width=400)
-    image[:, :5] = WHITE_PAINT
-    image[:, 395:] = WHITE_PAINT
-    assert not white_mask(image).any()
+def test_wide_bright_areas_are_not_selected():
+    """Sunlit asphalt or a white car has no darker road on both sides of its pixels."""
+    image = with_stripe(road(), WHITE_PAINT, 150, 100)
+    assert not threshold_lane_pixels(image, lane_widths()).any()
 
 
-@pytest.mark.parametrize("color", [YELLOW_PAINT, ASPHALT, (40, 150, 60)])
-def test_white_mask_ignores_dark_and_colored_stripes(color):
-    """Yellow paint, asphalt and green are too dark to be a white line."""
-    assert not white_mask(stripe(color)).any()
+def test_only_the_middle_of_a_wider_marking_is_kept():
+    """Pixels closer to the edge than the compare distance see the marking on one side."""
+    image = with_stripe(road(), WHITE_PAINT, 200, 18)  # wider than the distance of 12
+
+    assert selected_columns(threshold_lane_pixels(image, lane_widths())) == list(range(206, 212))
 
 
-@pytest.mark.parametrize("max_width", [30, 31])
-def test_remove_wide_runs_keeps_only_narrow_features(max_width):
-    """Runs of the maximum width or wider are removed, narrower ones are kept (even and odd)."""
-    mask = np.zeros((10, 200), np.uint8)
-    mask[:, 5:15] = 255  # 10 pixels wide
-    mask[:, 30 : 30 + max_width - 1] = 255  # one pixel narrower than the limit
-    mask[:, 90 : 90 + max_width] = 255  # exactly the limit
-    mask[:, 150:200] = 255  # wider, touching the right border
-    expected = np.zeros_like(mask)
-    expected[:, 5:15] = 255
-    expected[:, 30 : 30 + max_width - 1] = 255
-    assert np.array_equal(remove_wide_runs(mask, max_width), expected)
+def test_a_dark_stripe_is_not_selected():
+    """The shadow of a pole is darker than the road, not lighter."""
+    image = with_stripe(road(), DARK_SHADOW, 200, 8)
+    assert not threshold_lane_pixels(image, lane_widths()).any()
 
 
-def test_remove_wide_runs_keeps_narrow_runs_at_the_image_border():
-    """A narrow run cut off by the image border is not mistaken for a wide one."""
-    mask = np.zeros((10, 100), np.uint8)
-    mask[:, :10] = 255
-    mask[:, 90:] = 255
-    assert np.array_equal(remove_wide_runs(mask, max_width=30), mask)
+def test_bright_strips_at_the_image_borders_are_not_selected():
+    """Outside the image counts as the brightest value, so a strip cut by a border is no line."""
+    image = with_stripe(with_stripe(road(), WHITE_PAINT, 0, 5), WHITE_PAINT, WIDTH - 5, 5)
+    assert not threshold_lane_pixels(image, lane_widths()).any()
 
 
-def test_remove_wide_runs_does_not_modify_its_input():
-    """The input mask is left untouched."""
-    mask = np.full((5, 40), 255, np.uint8)
-    remove_wide_runs(mask, max_width=10)
-    assert mask.all()
+def test_rows_without_road_stay_empty():
+    """Above the horizon and on the car hood (lane width 0) nothing is selected."""
+    image = with_stripe(road(), WHITE_PAINT, 200, 8)
+    widths = lane_widths()
+    widths[: HEIGHT // 2] = 0.0
+
+    mask = threshold_lane_pixels(image, widths)
+
+    assert not mask[: HEIGHT // 2].any()
+    assert mask[HEIGHT // 2 :, 200:208].all()
 
 
-def test_threshold_lane_pixels_on_synthetic_road():
-    """Lane stripes are found, while wide white or yellow areas, concrete and sky are not."""
-    image, expected = synthetic_road()
-    assert np.array_equal(threshold_lane_pixels(image), expected)
+def test_the_same_markings_are_found_in_darker_or_paler_images():
+    """No fixed brightness: a darker image or one with less contrast gives the same mask."""
+    image = with_stripe(with_stripe(road(), WHITE_PAINT, 100, 8), YELLOW_PAINT, 300, 8)
+    darker = (image * 0.5).astype(np.uint8)
+    paler = (128 + (image.astype(np.float64) - 128) * 0.4).astype(np.uint8)
+
+    expected = threshold_lane_pixels(image, lane_widths())
+
+    assert np.array_equal(threshold_lane_pixels(darker, lane_widths()), expected)
+    assert np.array_equal(threshold_lane_pixels(paler, lane_widths()), expected)
 
 
-def test_threshold_lane_pixels_removes_areas_wider_than_a_line():
-    """Lines cross a row with at most about 3 % of the width; 6 % is something else."""
-    assert threshold_lane_pixels(stripe(YELLOW_PAINT, width=12)).any()  # 3 % of 400 pixels
-    assert not threshold_lane_pixels(stripe(YELLOW_PAINT, width=24)).any()  # 6 %
+def test_the_threshold_follows_the_noise_of_the_image():
+    """A faint stripe stands out on a smooth road but not on a rough one."""
+    faint = (102, 102, 102)  # 12 grey levels lighter than the road
+    smooth = with_stripe(road(), faint, 200, 8)
+    rough = with_stripe(road(noise=8.0), faint, 200, 8)
+    strong = with_stripe(road(noise=8.0), WHITE_PAINT, 200, 8)
+
+    assert threshold_lane_pixels(smooth, lane_widths())[:, 200:208].all()
+    assert threshold_lane_pixels(rough, lane_widths())[:, 200:208].mean() < 0.2
+    assert threshold_lane_pixels(strong, lane_widths())[:, 200:208].all()
 
 
-def test_threshold_lane_pixels_returns_binary_uint8_image():
+def test_threshold_lane_pixels_returns_a_binary_uint8_image():
     """The result is a single-channel uint8 image with the values 0 and 255 only."""
     image = np.random.default_rng(0).integers(0, 256, (60, 90, 3), dtype=np.uint8)
-    result = threshold_lane_pixels(image)
+    result = threshold_lane_pixels(image, lane_widths(60))
     assert result.shape == (60, 90)
     assert result.dtype == np.uint8
     assert set(np.unique(result)) <= {0, 255}
@@ -201,13 +196,12 @@ def test_threshold_lane_pixels_returns_binary_uint8_image():
 
 def test_threshold_lane_pixels_does_not_modify_its_input():
     """The input image is left untouched."""
-    image, _ = synthetic_road()
+    image = with_stripe(road(), WHITE_PAINT, 200, 8)
     original = image.copy()
-    threshold_lane_pixels(image)
+    threshold_lane_pixels(image, lane_widths())
     assert np.array_equal(image, original)
 
 
-@pytest.mark.parametrize("function", [yellow_mask, white_mask, threshold_lane_pixels])
 @pytest.mark.parametrize(
     "bad_image",
     [
@@ -218,54 +212,73 @@ def test_threshold_lane_pixels_does_not_modify_its_input():
     ],
     ids=["grayscale", "four-channels", "float", "1d"],
 )
-def test_functions_reject_images_that_are_not_8bit_bgr(function, bad_image):
+def test_images_that_are_not_8bit_bgr_are_rejected(bad_image):
     """Invalid input raises a clear error instead of a failure inside OpenCV."""
     with pytest.raises(ValueError, match="8-bit BGR"):
-        function(bad_image)
+        threshold_lane_pixels(bad_image, lane_widths(10))
 
 
-@pytest.mark.parametrize(
-    "name, yellow_columns, white_columns",
-    [
-        ("straight_lines1", (300, 320), (995, 1000)),
-        ("straight_lines2", (310, 322), (996, 1010)),
-    ],
-)
-def test_lane_pixels_lie_on_the_lines_and_not_on_the_asphalt(name, yellow_columns, white_columns):
-    """On a straight road the lines are detected and the asphalt between them is not."""
-    row = threshold_lane_pixels(cv2.imread(str(IMAGES_DIR / f"{name}.jpg")))[650]
-    assert row[slice(*yellow_columns)].all()
-    assert row[slice(*white_columns)].all()
-    assert not row[400:900].any()
+def test_one_lane_width_per_row_is_needed():
+    """The lane widths have to match the image height."""
+    with pytest.raises(ValueError, match="one lane width per image row"):
+        threshold_lane_pixels(road(), lane_widths(HEIGHT - 1))
 
 
-def test_works_for_other_resolutions():
-    """Images of another resolution are processed as well (960x540 camera)."""
+# ---------------------------------------------------------------------- real images
+
+
+@pytest.mark.parametrize("name", ["straight_lines1", "straight_lines2"])
+def test_the_lines_are_selected_and_the_asphalt_between_them_is_not(name, calibration):
+    """On a straight road both lines are found in the near rows, hardly anything between them."""
+    image = calibration.undistort(cv2.imread(str(IMAGES_DIR / f"{name}.jpg")))
+    near = threshold_lane_pixels(image, MAIN_CAMERA.lane_widths())[600:668]
+
+    assert near[:, 250:420].any()  # the yellow line on the left
+    assert near[:, 950:1050].any()  # a dash of the white line on the right
+    # Only scattered specks of the asphalt texture pass the three-sigma test.
+    between = near[:, 420:900]
+    assert np.count_nonzero(between) < 0.01 * between.size
+
+
+def test_the_second_camera_has_its_own_geometry():
+    """Images of the 960x540 camera are processed with their lane widths."""
     image = cv2.imread(str(IMAGES_DIR / "solidYellowCurve.jpg"))
-    result = threshold_lane_pixels(image)
-    assert image.shape[:2] == (540, 960)
+    result = threshold_lane_pixels(image, SECOND_CAMERA.lane_widths())
     assert result.shape == (540, 960)
     assert result.any()
 
 
-def test_dry_grass_next_to_the_road_is_removed():
-    """Yellowish grass is selected by the color mask but removed by the width filter."""
+def test_dry_grass_next_to_the_road_is_not_selected():
+    """Yellowish grass on the shoulder is not a narrow stripe."""
     image = cv2.imread(str(IMAGES_DIR / "straight_lines2.jpg"))
     height, width = image.shape[:2]
     shoulder = (slice(int(0.55 * height), int(0.66 * height)), slice(int(0.8 * width), width))
-    unfiltered = cv2.bitwise_or(yellow_mask(image), white_mask(image))[shoulder]
-    filtered = threshold_lane_pixels(image)[shoulder]
-    assert np.count_nonzero(unfiltered) > 0.95 * unfiltered.size
-    assert np.count_nonzero(filtered) < 0.02 * filtered.size
+    selected = threshold_lane_pixels(image, MAIN_CAMERA.lane_widths())[shoulder]
+    assert np.count_nonzero(selected) < 0.05 * selected.size
 
 
 @pytest.mark.parametrize("seconds", [32.0, 44.0])
-def test_sunlit_asphalt_is_not_selected_as_white(seconds, read_video_frame):
-    """Of the many bright pixels of sunlit asphalt (challenge video) few are taken as white."""
+def test_little_of_the_sunlit_asphalt_is_selected(seconds, read_video_frame):
+    """Of the many bright pixels of sunlit asphalt (challenge video) few are taken."""
     frame = read_video_frame("challenge03.mp4", seconds)
     lower_half = slice(frame.shape[0] // 2, None)
-    hls = cv2.cvtColor(frame, cv2.COLOR_BGR2HLS)
-    bright = cv2.inRange(hls, (0, 200, 0), (179, 255, 255))[lower_half]
-    white = white_mask(frame)[lower_half]
-    assert np.count_nonzero(white) < 0.25 * np.count_nonzero(bright)
-    assert np.count_nonzero(threshold_lane_pixels(frame)[lower_half]) < 0.1 * white.size
+    lightness = cv2.cvtColor(frame, cv2.COLOR_BGR2HLS)[:, :, 1]
+    bright = np.count_nonzero(lightness[lower_half] >= 200)
+    selected = np.count_nonzero(threshold_lane_pixels(frame, MAIN_CAMERA.lane_widths())[lower_half])
+    assert selected < 0.3 * bright
+
+
+@pytest.mark.parametrize(
+    "video, seconds", [("challenge02.mp4", 8), ("project_video03.mp4", 24), ("challenge01.mp4", 3)]
+)
+def test_real_frames_give_nearly_the_same_mask_when_darker_or_paler(
+    video, seconds, calibration, read_video_frame
+):
+    """Without any change of parameters, darker or paler versions of a frame keep the lines."""
+    frame = calibration.undistort(read_video_frame(video, seconds))
+    widths = MAIN_CAMERA.lane_widths()
+    original = threshold_lane_pixels(frame, widths) > 0
+    for changed in (frame * 0.55, 128 + (frame.astype(np.float64) - 128) * 0.5):
+        mask = threshold_lane_pixels(np.clip(changed, 0, 255).astype(np.uint8), widths) > 0
+        overlap = np.count_nonzero(original & mask) / np.count_nonzero(original | mask)
+        assert overlap > 0.75

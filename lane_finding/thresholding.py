@@ -1,36 +1,43 @@
-"""Color thresholding that turns a road image into a binary lane-pixel mask.
+"""Selecting the pixels of lane markings in a road image.
 
-Lane lines are either yellow or white, so two color masks are combined:
+A lane marking is a painted stripe 10-15 cm wide that is lighter (white paint) or yellower
+(yellow paint) than the road surface next to it. Fixed colour thresholds would only work for
+the light and the camera they were chosen with, so every pixel is compared with the road on
+both of its sides instead:
 
-* yellow: a hue range with enough saturation and brightness (HSV color space),
-* white: a bright stripe, lighter than the road on both sides (HLS lightness).
+* how far to the side the road is looked at follows from the camera geometry: the width of
+  the lane in pixels is known at every image row, and a marking is a fixed part of it,
+* a pixel belongs to a marking when it is lighter (lightness channel) or yellower (blue-yellow
+  channel of the Lab colour space) than the road on both sides by clearly more than the
+  noise of the image itself, which is measured in every image.
 
-Regions that are far wider than any lane line, such as sunlit asphalt, vehicles or
-dry grass, are removed from both masks.
+The inner pixels of areas wider than about two markings - sunlit asphalt, vehicles, grass -
+have no darker road on both sides and are therefore not selected. Light stripes narrower
+than the narrowest marking - seams, cracks, specks of noise - are dropped. Rows without road
+(above the horizon, on the car hood) stay empty.
 """
 
 import cv2
 import numpy as np
 
-# Yellow lane lines in OpenCV HSV space (H: 0-179, S: 0-255, V: 0-255). The minimum
-# saturation rejects gray asphalt and concrete, the minimum value still accepts
-# lines in shadow.
-YELLOW_LOWER = (15, 80, 80)
-YELLOW_UPPER = (35, 255, 255)
+from lane_finding.cameras import LANE_WIDTH_METERS
 
-# White lane lines: a pixel must have at least this HLS lightness (0-255) and be lighter by
-# at least WHITE_MIN_CONTRAST than the pixels this fraction of the image width to its left
-# and to its right. A line is a narrow bright stripe, while sunlit asphalt or concrete is
-# bright over a wide area and has no darker road next to it. The lower lightness than a
-# plain brightness threshold needs (200) keeps lines in the shade.
-WHITE_MIN_LIGHTNESS = 150
-WHITE_MIN_CONTRAST = 30
-WHITE_CONTRAST_DISTANCE_FRACTION = 0.02
-
-# Runs at least this wide (as a fraction of the image width) cannot belong to a lane
-# line and are removed. In the test material a line crosses a pixel row with at most
-# about 3 % of the width, even in sharp curves.
-MAX_LINE_RUN_FRACTION = 0.05
+# Road standards: lane lines are 10-15 cm wide (US 4-6 inches, Europe 0.10-0.15 m).
+MARKING_WIDTH_METERS = 0.15
+# The road is looked at this many marking widths to each side, so that markings up to twice
+# as wide (wide edge lines, or a marking that crosses a row at a slant in a bend) are found.
+COMPARE_DISTANCE_MARKINGS = 2.0
+# A marking has to stand out from the road by more than this many standard deviations of
+# the road noise of the image (three-sigma rule).
+NOISE_SIGMAS = 3.0
+# The smallest noise is one grey level, the resolution of an 8-bit image.
+MIN_NOISE = 1.0
+# The noise is measured on the road ahead: in every row this many lane widths to each side
+# of the image centre (the own lane and the neighbouring ones).
+ROAD_HALF_WIDTH_LANES = 1.5
+# For normally distributed noise the standard deviation is 1.4826 times the median absolute
+# deviation; the difference of two pixels has sqrt(2) times the noise of one pixel.
+_MEDIAN_DIFFERENCE_TO_SIGMA = 1.4826 / np.sqrt(2)
 
 
 def _require_bgr(image: np.ndarray) -> None:
@@ -49,98 +56,90 @@ def _require_bgr(image: np.ndarray) -> None:
         )
 
 
-def yellow_mask(image: np.ndarray) -> np.ndarray:
-    """Select the yellow pixels of an image.
+def compare_distances(lane_widths: np.ndarray) -> np.ndarray:
+    """Compute how far to each side the road is looked at in every image row.
 
     Args:
-        image: 8-bit BGR image.
+        lane_widths: Width of the lane in pixels at every row, 0 for rows without road.
 
     Returns:
-        Mask of the same height and width as the image with 255 for yellow pixels
-        and 0 elsewhere.
-
-    Raises:
-        ValueError: If the input is not an 8-bit BGR image.
+        Integer array with the distance in pixels for every row; 0 where no marking can be
+        resolved (no road, or the distance would be below one pixel).
     """
-    _require_bgr(image)
-    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    return cv2.inRange(hsv, YELLOW_LOWER, YELLOW_UPPER)
+    scale = COMPARE_DISTANCE_MARKINGS * MARKING_WIDTH_METERS / LANE_WIDTH_METERS
+    return np.rint(scale * np.asarray(lane_widths, dtype=np.float64)).astype(np.intp)
 
 
-def white_mask(image: np.ndarray) -> np.ndarray:
-    """Select the pixels of white lines: bright pixels that are lighter than both sides.
+def stands_out(channel: np.ndarray, distances: np.ndarray, lane_widths: np.ndarray) -> np.ndarray:
+    """Select the pixels that are higher than the channel on both of their sides.
 
-    Each pixel is compared with the pixels ``WHITE_CONTRAST_DISTANCE_FRACTION`` of the
-    image width to its left and to its right (outside the image counts as white). A line
-    narrower than that distance is selected completely, a wider one only in its middle
-    (enough for the fit). Lane lines cross a row with at most about 3 % of the width, less
-    than twice the distance, at which a line would vanish.
+    A pixel is selected when it exceeds the higher of the two pixels ``distance`` to its
+    left and to its right (outside the image counts as the maximum) by more than
+    ``NOISE_SIGMAS`` times the noise. The noise is the robust standard deviation of the
+    differences between pixels ``distance`` apart on the road ahead.
 
     Args:
-        image: 8-bit BGR image.
+        channel: Single-channel 8-bit image.
+        distances: Compare distance for every row (see :func:`compare_distances`).
+        lane_widths: Width of the lane in pixels at every row, which marks the road ahead.
 
     Returns:
-        Mask of the same height and width as the image with 255 for pixels whose HLS
-        lightness is at least ``WHITE_MIN_LIGHTNESS`` and at least ``WHITE_MIN_CONTRAST``
-        above the lightness on both sides, and 0 elsewhere.
-
-    Raises:
-        ValueError: If the input is not an 8-bit BGR image.
+        Mask with 255 for the selected pixels and 0 elsewhere.
     """
-    _require_bgr(image)
-    lightness = cv2.cvtColor(image, cv2.COLOR_BGR2HLS)[:, :, 1]
-    distance = max(1, round(WHITE_CONTRAST_DISTANCE_FRACTION * image.shape[1]))
-    left = np.full_like(lightness, 255)
-    left[:, distance:] = lightness[:, :-distance]
-    right = np.full_like(lightness, 255)
-    right[:, :-distance] = lightness[:, distance:]
-    contrast = cv2.subtract(lightness, cv2.max(left, right))
-    bright = cv2.inRange(lightness, WHITE_MIN_LIGHTNESS, 255)
-    return cv2.bitwise_and(bright, cv2.inRange(contrast, WHITE_MIN_CONTRAST, 255))
+    height, width = channel.shape
+    contrast = np.zeros_like(channel)
+    histogram = np.zeros(256, np.int64)
+    center = width / 2
+    for distance in np.unique(distances[distances > 0]):
+        rows = np.flatnonzero(distances == distance)
+        top, bottom = rows[0], rows[-1] + 1  # the distance grows with the row
+        band = channel[top:bottom]
+        left = np.full_like(band, 255)
+        left[:, distance:] = band[:, :-distance]
+        right = np.full_like(band, 255)
+        right[:, :-distance] = band[:, distance:]
+        contrast[top:bottom] = cv2.subtract(band, cv2.max(left, right))
+        reach = ROAD_HALF_WIDTH_LANES * lane_widths[top:bottom].max()
+        first = max(0, int(center - reach))
+        last = min(width, int(center + reach))
+        road = band[:, first:last]
+        differences = cv2.absdiff(road[:, distance:], road[:, :-distance])
+        histogram += np.bincount(differences.ravel(), minlength=256)
+    total = histogram.sum()
+    if total == 0:
+        return np.zeros_like(channel)
+    median = int(np.searchsorted(np.cumsum(histogram), total / 2))
+    noise = max(_MEDIAN_DIFFERENCE_TO_SIGMA * median, MIN_NOISE)
+    return cv2.compare(contrast, NOISE_SIGMAS * noise, cv2.CMP_GT)
 
 
-def remove_wide_runs(mask: np.ndarray, max_width: int) -> np.ndarray:
-    """Remove the pixels that lie on a horizontal run of ``max_width`` or more.
+def threshold_lane_pixels(image: np.ndarray, lane_widths: np.ndarray) -> np.ndarray:
+    """Create the binary image of lane-marking pixels from a road image.
 
-    This is a morphological opening with a one-pixel-high kernel: the erosion marks
-    the first pixel of every run of at least ``max_width`` pixels and the dilation
-    spreads each mark back over the run. The kernel anchors are set explicitly
-    (a centered anchor is not exact for even widths) and pixels outside the image
-    count as 0, so a narrow run at the image border is not mistaken for a wide one.
-
-    Args:
-        mask: Binary mask with values 0 and 255.
-        max_width: Smallest run length in pixels that is removed.
-
-    Returns:
-        Copy of the mask without the wide runs.
-    """
-    kernel = np.ones((1, max_width), np.uint8)
-    border = {"borderType": cv2.BORDER_CONSTANT, "borderValue": 0}
-    run_starts = cv2.erode(mask, kernel, anchor=(0, 0), **border)
-    wide_runs = cv2.dilate(run_starts, kernel, anchor=(max_width - 1, 0), **border)
-    return cv2.subtract(mask, wide_runs)
-
-
-def threshold_lane_pixels(image: np.ndarray) -> np.ndarray:
-    """Create the binary image of lane-line pixels from a road image.
-
-    Combines the yellow and the white mask after removing the regions that are too
-    wide to be a lane line. Works for any resolution because all limits are either
-    color values or fractions of the image width.
+    White markings stand out in the lightness, yellow ones in the blue-yellow channel of
+    the Lab colour space; both are combined.
 
     Args:
         image: 8-bit BGR road image, normally already undistorted.
+        lane_widths: Width of the lane in pixels at every image row, 0 for the rows without
+            road (see :meth:`lane_finding.cameras.CameraProfile.lane_widths`).
 
     Returns:
-        Single-channel uint8 image of the same height and width with 255 for lane
+        Single-channel uint8 image of the same height and width with 255 for marking
         pixels and 0 elsewhere.
 
     Raises:
-        ValueError: If the input is not an 8-bit BGR image.
+        ValueError: If the input is not an 8-bit BGR image or the number of lane widths
+            differs from the image height.
     """
     _require_bgr(image)
-    max_width = max(2, round(MAX_LINE_RUN_FRACTION * image.shape[1]))
-    yellow = remove_wide_runs(yellow_mask(image), max_width)
-    white = remove_wide_runs(white_mask(image), max_width)
-    return cv2.bitwise_or(yellow, white)
+    lane_widths = np.asarray(lane_widths, dtype=np.float64)
+    if lane_widths.shape != (image.shape[0],):
+        raise ValueError(
+            f"Expected one lane width per image row ({image.shape[0]}), got {lane_widths.shape}"
+        )
+    distances = compare_distances(lane_widths)
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2Lab)
+    white = stands_out(lab[:, :, 0], distances, lane_widths)
+    yellow = stands_out(lab[:, :, 2], distances, lane_widths)
+    return cv2.bitwise_or(white, yellow)

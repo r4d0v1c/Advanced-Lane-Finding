@@ -10,6 +10,11 @@ previous frames and uses it in five ways:
 * the accepted lanes are smoothed over the frames,
 * while no lane is found the last one is held for a while,
 * after a longer loss a new lane is accepted only when several frames in a row agree on it.
+
+A line that was derived from the other one (it had no pixels) is a guess, not an
+observation. The tracker remembers which lines were really seen and compares only those, and
+it takes the lane width for deriving a line only from frames in which both lines were well
+supported; otherwise a wrong guess would keep confirming itself.
 """
 
 from dataclasses import dataclass
@@ -41,7 +46,8 @@ COMPARE_ROW_FRACTIONS = (0.95, 0.5)
 # After this many frames in a row without an accepted lane the previous lane no longer guides
 # the search and a new lane has to be confirmed.
 MAX_MISSED_FRAMES = 5
-# For this many frames without an accepted lane the last lane is still shown (about 1.5 s).
+# For this many frames without an accepted lane the last lane is still kept (about 1.5 s): it
+# guides the search and gives the measurements, but it is not drawn as a found lane.
 HOLD_FRAMES = 45
 # A new lane is confirmed when this many frames in a row agree on it.
 CONFIRMING_FRAMES = 3
@@ -88,7 +94,10 @@ def _positions(curves: tuple[np.ndarray, np.ndarray], size: tuple[int, int]) -> 
 
 
 def _is_close(
-    new: tuple[np.ndarray, np.ndarray], old: tuple[np.ndarray, np.ndarray], size: tuple[int, int]
+    new: tuple[np.ndarray, np.ndarray],
+    old: tuple[np.ndarray, np.ndarray],
+    size: tuple[int, int],
+    lines: tuple[bool, bool] = (True, True),
 ) -> bool:
     """Check that two lanes are in about the same place.
 
@@ -96,13 +105,41 @@ def _is_close(
         new: Coefficients of the left and the right curve of the first lane.
         old: The same for the second lane.
         size: ``(width, height)`` of the bird's-eye image.
+        lines: Which of the two lines (left, right) are compared.
 
     Returns:
-        ``True`` if no lane line moved sideways by more than ``MAX_FRAME_SHIFT_FRACTION`` of
-        the image width at the compared rows.
+        ``True`` if none of the compared lines moved sideways by more than
+        ``MAX_FRAME_SHIFT_FRACTION`` of the image width at the compared rows.
     """
-    shift = np.abs(_positions(new, size) - _positions(old, size)).max()
-    return bool(shift <= MAX_FRAME_SHIFT_FRACTION * size[0])
+    shift = np.abs(_positions(new, size) - _positions(old, size))[list(lines)]
+    return bool(np.all(shift <= MAX_FRAME_SHIFT_FRACTION * size[0]))
+
+
+def _seen_lines(fit: LaneFit) -> tuple[bool, bool]:
+    """Tell which lines of a detection rest on pixels of the frame.
+
+    Args:
+        fit: A detection.
+
+    Returns:
+        For the left and the right line, whether it was fitted to pixels (and not derived
+        from the other line).
+    """
+    return fit.left_pixels[0].size > 0, fit.right_pixels[0].size > 0
+
+
+def _support(fit: LaneFit) -> tuple[int, bool, int]:
+    """Rank a detection by how much of it was observed.
+
+    Args:
+        fit: A detection.
+
+    Returns:
+        A key that is larger for more seen lines, then for two independently fitted lines,
+        then for more pixels.
+    """
+    pixels = fit.left_pixels[0].size + fit.right_pixels[0].size
+    return sum(_seen_lines(fit)), fit.mode is FitMode.INDEPENDENT, pixels
 
 
 def _has_similar_width(
@@ -159,6 +196,14 @@ class LaneTracker:
         """Create a tracker that has not seen any frame."""
         # The smoothed left and right curve; None before the first lane was accepted.
         self._lane: tuple[np.ndarray, np.ndarray] | None = None
+        # Whether the left and the right curve were seen in the last accepted frame.
+        self._seen = (False, False)
+        # The smoothed lane of the frames in which both lines were well supported (fitted
+        # independently): its width is used to derive a missing line and to check a new
+        # lane. None before such a frame.
+        self._measured: tuple[np.ndarray, np.ndarray] | None = None
+        # Frames since the measured lane was last updated.
+        self._measured_age = 0
         # Frames in a row without an accepted lane.
         self._missed = 0
         # The latest candidate for a new lane and the number of frames that agree on it.
@@ -172,7 +217,7 @@ class LaneTracker:
 
     @property
     def _holding(self) -> bool:
-        """Whether the last lane is still shown although it was not found again."""
+        """Whether the last lane is still kept although it was not found again."""
         return self._lane is not None and self._missed < HOLD_FRAMES
 
     def update(self, binary: np.ndarray) -> TrackedLane:
@@ -189,17 +234,24 @@ class LaneTracker:
             ValueError: If the input is not a single-channel image.
         """
         size = (binary.shape[1], binary.shape[0])
-        lane_width = None if self._lane is None else self._lane[1] - self._lane[0]
+        self._measured_age += 1
+        lane_width = None if self._measured is None else self._measured[1] - self._measured[0]
+        candidates = []
         if self._following:
-            detection = fit_from_pixels(*search_around(binary, self._lane), size, lane_width)
-            if self._agrees(detection, size):
-                return self._accept(detection)
+            near = fit_from_pixels(*search_around(binary, self._lane), size, lane_width)
+            if near.mode is FitMode.INDEPENDENT and self._agrees(near, size):
+                return self._accept(near, size)
+            candidates.append(near)
+        # The search near the previous lane did not see both lines: a line that is not where
+        # the lane expects it (because it was derived wrongly) can only be found from scratch.
         detection = fit_lane(binary, lane_width)
         if self._following:
-            if self._agrees(detection, size):
-                return self._accept(detection)
+            candidates.append(detection)
+            agreeing = [fit for fit in candidates if self._agrees(fit, size)]
+            if agreeing:
+                return self._accept(max(agreeing, key=_support), size)
         elif self._confirms(detection, size):
-            return self._accept(detection, reset=True)
+            return self._accept(detection, size, reset=True)
         return self._reject(detection)
 
     def reproject(self, old: PerspectiveTransform, new: PerspectiveTransform) -> None:
@@ -211,6 +263,8 @@ class LaneTracker:
         """
         if self._lane is not None:
             self._lane = tuple(_reproject_curve(curve, old, new) for curve in self._lane)
+        if self._measured is not None:
+            self._measured = tuple(_reproject_curve(curve, old, new) for curve in self._measured)
         if self._candidate is not None:
             self._candidate = tuple(_reproject_curve(curve, old, new) for curve in self._candidate)
 
@@ -222,13 +276,26 @@ class LaneTracker:
             size: ``(width, height)`` of the bird's-eye image.
 
         Returns:
-            ``True`` if it is a plausible lane that is near the tracked lane and about as
-            wide.
+            ``True`` if it is a plausible lane whose lines are near the tracked ones and,
+            when both of its lines were seen, about as wide as the measured lane. Only the
+            lines seen both in the detection and in the tracked lane are compared (all of
+            them if there is no such line): a derived line is no evidence of where the line is.
+            The width is compared only while it was measured within the last
+            ``MAX_MISSED_FRAMES`` frames, like the previous lane guides the search only that
+            long: an old width may have been measured in a wrong view of the road.
         """
         if not fit.is_plausible(size):
             return False
         curves = (fit.left, fit.right)
-        return _is_close(curves, self._lane, size) and _has_similar_width(curves, self._lane, size)
+        seen = _seen_lines(fit)
+        compared = (seen[0] and self._seen[0], seen[1] and self._seen[1])
+        if not any(compared):
+            compared = (True, True)
+        if not _is_close(curves, self._lane, size, compared):
+            return False
+        if not all(seen) or self._measured is None or self._measured_age > MAX_MISSED_FRAMES:
+            return True  # a derived line has the measured width by construction
+        return _has_similar_width(curves, self._measured, size)
 
     def _confirms(self, fit: LaneFit, size: tuple[int, int]) -> bool:
         """Check whether a detection completes a run of frames that agree on a new lane.
@@ -257,24 +324,38 @@ class LaneTracker:
         first_lane = self._lane is None and fit.mode is FitMode.INDEPENDENT
         return self._agreeing >= (1 if first_lane else CONFIRMING_FRAMES)
 
-    def _accept(self, fit: LaneFit, reset: bool = False) -> TrackedLane:
+    def _accept(self, fit: LaneFit, size: tuple[int, int], reset: bool = False) -> TrackedLane:
         """Take a detection into the tracked lane.
 
         Args:
             fit: The accepted detection.
+            size: ``(width, height)`` of the bird's-eye image.
             reset: Start from the detection instead of smoothing it into the tracked lane.
 
         Returns:
             The smoothed lane, marked as detected.
         """
         curves = (fit.left, fit.right)
+        seen = _seen_lines(fit)
+        well_supported = fit.mode is FitMode.INDEPENDENT
         if self._lane is None or reset:
             self._lane = curves
         else:
+            # A line that was only derived and is now well supported somewhere else replaces
+            # the wrong guess at once; everything else is smoothed.
+            replaced = [
+                well_supported
+                and not self._seen[index]
+                and not _is_close(curves, self._lane, size, (index == 0, index == 1))
+                for index in (0, 1)
+            ]
             self._lane = tuple(
-                SMOOTHING_WEIGHT * new + (1 - SMOOTHING_WEIGHT) * old
-                for new, old in zip(curves, self._lane, strict=True)
+                new if replace else SMOOTHING_WEIGHT * new + (1 - SMOOTHING_WEIGHT) * old
+                for new, old, replace in zip(curves, self._lane, replaced, strict=True)
             )
+        self._seen = seen
+        if well_supported:
+            self._measured, self._measured_age = self._lane, 0
         self._missed = 0
         self._candidate, self._agreeing = None, 0
         smoothed = LaneFit(*self._lane, fit.left_pixels, fit.right_pixels, fit.mode)

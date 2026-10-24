@@ -12,8 +12,6 @@ Each lane line is described by a second-degree polynomial ``x = A*y**2 + B*y + C
    strong lines are fitted independently, a weak line is fitted together with the other one
    (shared curvature) and a missing line is derived from the other one by the lane width.
 
-In a video the first two steps can be replaced by :func:`search_around`, which takes the
-pixels near the curves of the previous frame (see :mod:`lane_finding.tracking`).
 """
 
 from dataclasses import dataclass, field

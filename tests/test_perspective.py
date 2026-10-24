@@ -163,7 +163,8 @@ def test_straight_road_of_the_main_camera_gives_vertical_parallel_lines(name, ca
     """On the images used to derive the geometry the lines are vertical, 640 pixels apart."""
     image = calibration.undistort(cv2.imread(str(IMAGES_DIR / f"{name}.jpg")))
     transform = PerspectiveTransform.for_camera(MAIN_CAMERA)
-    binary = transform.warp(threshold_lane_pixels(image), cv2.INTER_NEAREST)
+    mask = threshold_lane_pixels(image, MAIN_CAMERA.lane_widths())
+    binary = transform.warp(mask, cv2.INTER_NEAREST)
 
     measurement = measure_lane_lines(binary, MAIN_CAMERA)
 
@@ -178,7 +179,8 @@ def test_straight_road_of_the_second_camera_gives_vertical_parallel_lines(name):
     """The same holds for the second camera (no undistortion), 480 pixels apart."""
     image = cv2.imread(str(IMAGES_DIR / f"{name}.jpg"))
     transform = PerspectiveTransform.for_camera(SECOND_CAMERA)
-    binary = transform.warp(threshold_lane_pixels(image), cv2.INTER_NEAREST)
+    mask = threshold_lane_pixels(image, SECOND_CAMERA.lane_widths())
+    binary = transform.warp(mask, cv2.INTER_NEAREST)
 
     measurement = measure_lane_lines(binary, SECOND_CAMERA)
 
@@ -208,7 +210,7 @@ def test_lane_width_is_right_on_frames_not_used_for_the_geometry(
     if camera.size == calibration.image_size:
         frame = calibration.undistort(frame)
     transform = PerspectiveTransform.for_camera(camera)
-    binary = transform.warp(threshold_lane_pixels(frame), cv2.INTER_NEAREST)
+    binary = transform.warp(threshold_lane_pixels(frame, camera.lane_widths()), cv2.INTER_NEAREST)
 
     measurement = measure_lane_lines(binary, camera)
 
@@ -223,7 +225,7 @@ def test_measured_horizon_removes_the_funnel_effect_in_challenge02(
 ):
     """The camera of challenge02 looks lower; with its own horizon the lines are parallel."""
     frame = calibration.undistort(read_video_frame("challenge02.mp4", seconds))
-    binary = threshold_lane_pixels(frame)
+    binary = threshold_lane_pixels(frame, MAIN_CAMERA.lane_widths())
 
     def width_ratio(horizon_y: float | None) -> float:
         """Compute the lane width far away divided by the width nearby."""

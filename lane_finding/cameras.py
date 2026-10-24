@@ -1,14 +1,10 @@
 """Cameras that appear in the test material and the road geometry of each of them.
 
-The geometry was measured on straight road sections (``straight_lines1/2`` for the
-main camera, ``solid*`` images and videos for the second camera). On a flat road the
+The geometry was measured on straight road sections.  On a flat road the
 parallel lane lines meet at the horizon and the lane width grows linearly with the
 distance from the horizon in the image:
 
     lane width in pixels = lane_width_per_row * (row - horizon_y)
-
-The lane width per row is about 3 for both cameras, which means that both are mounted
-at the same height. The vanishing point lies in the middle column of the image.
 
 The same model gives the ground distance of an image row, which turns the bird's-eye view
 into a map with a known scale:
@@ -16,9 +12,12 @@ into a map with a known scale:
     distance in metres = focal_height / (row - horizon_y)
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
+
+# Width of a lane, as in the course material (a motorway lane is 12 ft = 3.66 m).
+LANE_WIDTH_METERS = 3.7
 
 
 @dataclass(frozen=True)
@@ -37,11 +36,7 @@ class CameraProfile:
         bottom_y: Row of the near edge of the bird's-eye view, just above the car hood
             or the bottom of the image.
         focal_height: Focal length (in pixels) times the height of the camera above the
-            road (in metres). It was calibrated with the dashed lane line, whose dashes
-            repeat every 14.63 m (12 ft dash and 36 ft gap), and agrees with the focal
-            length of the chessboard calibration within a few percent for the main
-            camera. The distances are accurate to about 5 %, mostly because they depend
-            on the horizon row.
+            road (in metres).
     """
 
     name: str
@@ -52,8 +47,40 @@ class CameraProfile:
     bottom_y: float
     focal_height: float
 
-    def source_points(self, horizon_y: float | None = None) -> np.ndarray:
-        """Compute the road trapezoid that is mapped to the bird's-eye view.
+    @property
+    def view_distance(self) -> float:
+        """Distance in meters of the far edge of the bird's-eye view from the camera."""
+        return self.focal_height / self.top_offset
+
+    def with_view_distance(self, distance: float) -> "CameraProfile":
+        """Create the same profile with the far edge of the bird's-eye view moved.
+
+        Args:
+            distance: New distance of the far edge from the camera in meters.
+
+        Returns:
+            A copy of the profile with the matching ``top_offset``.
+        """
+        return replace(self, top_offset=self.focal_height / distance)
+
+    def lane_widths(self, horizon_y: float | None = None) -> np.ndarray:
+        """Compute the width of the lane in pixels at every image row.
+
+        Args:
+            horizon_y: Row of the horizon to use instead of the default one of the camera.
+
+        Returns:
+            Float array with one width per image row; 0 for the rows without road, that is
+            at and above the horizon and below ``bottom_y`` (the car hood).
+        """
+        horizon = self.horizon_y if horizon_y is None else horizon_y
+        rows = np.arange(self.size[1], dtype=np.float64)
+        widths = self.lane_width_per_row * (rows - horizon)
+        widths[(rows <= horizon) | (rows > self.bottom_y)] = 0.0
+        return widths
+
+    def region_of_interest(self, horizon_y: float | None = None) -> np.ndarray:
+        """Compute the region of interest: the road trapezoid mapped to the bird's-eye view.
 
         The trapezoid is one lane wide, symmetric around the middle column of the
         image and its edges run along the lane lines towards the horizon.
