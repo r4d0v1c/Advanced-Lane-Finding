@@ -18,12 +18,14 @@ from pathlib import Path
 import cv2
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT))  # the scripts are in a subfolder: make lane_finding importable
+# The scripts are in a subfolder: make lane_finding importable. The lane_finding imports
+# therefore come after this line and not at the top of the file.
+sys.path.insert(0, str(REPO_ROOT))
 
-from lane_finding.calibration import CameraCalibration  # noqa: E402
-from lane_finding.overlay import NO_LANE_TEXT  # noqa: E402
-from lane_finding.pipeline import LanePipeline  # noqa: E402
-from lane_finding.visualization import (  # noqa: E402
+from lane_finding.calibration import CameraCalibration
+from lane_finding.overlay import NO_LANE_TEXT
+from lane_finding.pipeline import LanePipeline
+from lane_finding.visualization import (
     draw_lane_fit,
     draw_text_lines,
     side_by_side,

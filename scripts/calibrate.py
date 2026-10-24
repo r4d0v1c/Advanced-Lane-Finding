@@ -19,16 +19,18 @@ import cv2
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT))  # the scripts are in a subfolder: make lane_finding importable
+# The scripts are in a subfolder: make lane_finding importable. The lane_finding imports
+# therefore come after this line and not at the top of the file.
+sys.path.insert(0, str(REPO_ROOT))
 
-from lane_finding.calibration import (  # noqa: E402
+from lane_finding.calibration import (
     DEFAULT_PATTERN_SIZE,
     CameraCalibration,
     calibrate,
     collect_observations,
     find_chessboard_corners,
 )
-from lane_finding.visualization import side_by_side  # noqa: E402
+from lane_finding.visualization import side_by_side
 
 logger = logging.getLogger(__name__)
 

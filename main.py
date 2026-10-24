@@ -2,15 +2,6 @@
 
 Usage:
     python3 main.py [VIDEO ...] [--output-dir DIR]
-
-Without arguments every video of resources/test_videos_export is processed frame by frame,
-using only the frames seen so far, as a system in a car would: the horizon is estimated from
-the frames so far (starting with the usual one of the camera), and a tracker follows the
-lane from frame to frame: it smooths the lane,
-shows the last lane (with a note) while the lane lines are not visible and ignores results
-that jump. The colors are the ones of scripts/run_images.py. The camera is recognized by
-the video resolution. Videos of the calibrated camera are undistorted first (run
-scripts/calibrate.py before), videos of the other camera are used as they are.
 """
 
 import argparse
@@ -23,14 +14,16 @@ from pathlib import Path
 import cv2
 
 REPO_ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(REPO_ROOT))  # make lane_finding importable from any working folder
+# Make lane_finding importable from any working folder. The lane_finding imports therefore
+# come after this line and not at the top of the file.
+sys.path.insert(0, str(REPO_ROOT))
 
-from lane_finding.calibration import CameraCalibration  # noqa: E402
-from lane_finding.cameras import camera_for_size  # noqa: E402
-from lane_finding.horizon import HorizonEstimator  # noqa: E402
-from lane_finding.overlay import draw_lane_overlay  # noqa: E402
-from lane_finding.pipeline import LanePipeline  # noqa: E402
-from lane_finding.tracking import LaneTracker, TrackStatus  # noqa: E402
+from lane_finding.calibration import CameraCalibration
+from lane_finding.cameras import camera_for_size
+from lane_finding.horizon import HorizonEstimator
+from lane_finding.overlay import draw_lane_overlay
+from lane_finding.pipeline import LanePipeline
+from lane_finding.tracking import LaneTracker, TrackStatus
 
 logger = logging.getLogger(__name__)
 
