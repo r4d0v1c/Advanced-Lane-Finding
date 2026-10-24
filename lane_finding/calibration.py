@@ -17,9 +17,7 @@ DEFAULT_PATTERN_SIZE = (9, 6)
 # OpenCV recommends at least 10 views of the target for a reliable calibration.
 MIN_CALIBRATION_IMAGES = 10
 
-# The third radial coefficient (k3) is fixed to zero. The calibration images cannot
-# constrain it (its estimate swings strongly between image subsets while the
-# reprojection error stays the same), so fixing it keeps the model stable.
+# The third radial coefficient (k3) is fixed to zero.
 _CALIBRATION_FLAGS = cv2.CALIB_FIX_K3
 
 
@@ -132,9 +130,6 @@ class CameraCalibration:
 def build_object_points(pattern_size: tuple[int, int] = DEFAULT_PATTERN_SIZE) -> np.ndarray:
     """Build the 3-D coordinates of the chessboard's inner corners.
 
-    The board lies in the ``z = 0`` plane and one chessboard square is the unit of
-    length. Corners are ordered row by row, matching the order of the detector.
-
     Args:
         pattern_size: Inner corners ``(columns, rows)`` of the chessboard.
 
@@ -152,10 +147,6 @@ def find_chessboard_corners(
 ) -> np.ndarray | None:
     """Detect the inner corners of a chessboard with sub-pixel accuracy.
 
-    Uses the sector-based detector, which refines the corners itself and also finds
-    boards whose outer squares are clipped by the image border (the classic detector
-    misses those).
-
     Args:
         gray: 8-bit single-channel image.
         pattern_size: Inner corners ``(columns, rows)`` of the chessboard.
@@ -169,7 +160,7 @@ def find_chessboard_corners(
     )
     if not found:
         return None
-    # The array layout returned by the detector differs between OpenCV versions.
+
     return corners.reshape(-1, 1, 2).astype(np.float32, copy=False)
 
 
@@ -178,10 +169,6 @@ def collect_observations(
     pattern_size: tuple[int, int] = DEFAULT_PATTERN_SIZE,
 ) -> ChessboardObservations:
     """Detect the chessboard in every image and keep the usable detections.
-
-    An image is skipped when it cannot be read, when no complete chessboard is found
-    in it, or when its resolution differs from the majority of the detections
-    (calibration assumes a single resolution). Every skipped image is logged.
 
     Args:
         image_paths: Paths of the calibration images.
