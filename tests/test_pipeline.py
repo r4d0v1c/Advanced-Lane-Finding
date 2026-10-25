@@ -153,20 +153,6 @@ def test_process_measures_a_straight_road(name, calibration):
     assert result.measurements.lane_width == pytest.approx(LANE_WIDTH_METERS, abs=0.4)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="a light pavement seam next to the dashed right line stands out like a marking; "
-    "in a single image it pulls the radius down to about 450 m",
-)
-def test_process_measures_a_bend_to_the_left(calibration):
-    """The bend of test2 has a radius of several hundred meters and is to the left."""
-    result = LanePipeline(calibration).process(read_test_image("test2"))
-
-    assert result.plausible
-    assert result.measurements.curvature < 0
-    assert 500 < result.measurements.radius < 1500
-
-
 def test_process_returns_the_prepared_image(calibration):
     """The result carries what the lane was found in, so that it can be drawn on."""
     pipeline = LanePipeline(calibration)

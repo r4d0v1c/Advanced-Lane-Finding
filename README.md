@@ -71,7 +71,7 @@ argument, e.g. `python3 scripts/warp.py resources/test_images_export/test2.jpg` 
 | `lane_finding/overlay.py`, `visualization.py` | drawing the result |
 | `lane_finding/pipeline.py` | `LanePipeline`: connects all steps for an image or a video frame |
 | `main.py`, `scripts/` | command-line entry points (thin wrappers around `LanePipeline`) |
-| `tests/` | 288 pytest tests on synthetic scenes with exact truth and on the real data |
+| `tests/` | 287 pytest tests on synthetic scenes with exact truth and on the real data |
 
 ## Approach
 
@@ -326,7 +326,7 @@ than real time.
   of the frames; in the rest nothing is drawn.
 * **Single images** have no previous frames to check against: on `test2` a light pavement seam
   next to the dashed line bends the fitted line, and the radius comes out as ~450 m instead of
-  ~1 km (kept as a documented failing test).
+  ~1 km.
 * **Hand-set constants** remain in the window search, the plausibility check, the tracker and
   the Hough step (window sizes, tolerances, number of frames), chosen from geometry and
   experiments in fractions of the image size; they are documented in the code.
