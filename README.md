@@ -1,6 +1,6 @@
 # Advanced Lane Finding
 
-A classical computer-vision pipeline (Python + OpenCV, no machine learning) that finds the
+A classical computer-vision pipeline (Python + OpenCV) that finds the
 ego lane in dashcam images and videos and reports the **radius of curvature**, the
 **position of the vehicle** relative to the lane center and the **lane width**.
 
